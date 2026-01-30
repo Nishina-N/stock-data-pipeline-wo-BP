@@ -2,222 +2,156 @@
 2_fetch_price_data.py
 
 Yahoo Financeから直近1000日分の価格データを取得
-テクニカル指標も計算してJSON化
+既存のfetch_price_data2.pyのロジックを使用（チャンクダウンロード）
 """
+import os
 import pandas as pd
 import yfinance as yf
-import numpy as np
 from datetime import datetime, timedelta
+import time
 import logging
-import json
-import os
 
 DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
-TEMP_PRICE_JSON = os.path.join(DATA_FOLDER, "temp_prices.json")
+TEMP_PRICE_PKL = os.path.join(DATA_FOLDER, "temp_prices.pkl")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def calculate_sma(prices, period):
-    """単純移動平均"""
-    if len(prices) < period:
-        return None
-    return round(np.mean(prices[-period:]), 2)
-
-def calculate_ema(prices, period):
-    """指数移動平均"""
-    if len(prices) < period:
-        return None
-    df = pd.Series(prices)
-    ema = df.ewm(span=period, adjust=False).mean()
-    return round(ema.iloc[-1], 2)
-
-def calculate_rsi(prices, period=14):
-    """RSI（Relative Strength Index）"""
-    if len(prices) < period + 1:
-        return None
-    
-    deltas = np.diff(prices)
-    gains = np.where(deltas > 0, deltas, 0)
-    losses = np.where(deltas < 0, -deltas, 0)
-    
-    avg_gain = np.mean(gains[-period:])
-    avg_loss = np.mean(losses[-period:])
-    
-    if avg_loss == 0:
-        return 100
-    
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return round(rsi, 2)
-
-def calculate_atr(high_prices, low_prices, close_prices, period=14):
-    """ATR（Average True Range）"""
-    if len(high_prices) < period + 1:
-        return None
-    
-    true_ranges = []
-    for i in range(1, len(high_prices)):
-        tr = max(
-            high_prices[i] - low_prices[i],
-            abs(high_prices[i] - close_prices[i-1]),
-            abs(low_prices[i] - close_prices[i-1])
-        )
-        true_ranges.append(tr)
-    
-    atr = np.mean(true_ranges[-period:])
-    return round(atr, 2)
-
-def calculate_vwap(high_prices, low_prices, close_prices, volumes):
-    """VWAP（Volume Weighted Average Price）- 当日のみ"""
-    if not volumes or sum(volumes) == 0:
-        return None
-    
-    typical_prices = [(h + l + c) / 3 for h, l, c in zip(high_prices, low_prices, close_prices)]
-    vwap = sum(tp * v for tp, v in zip(typical_prices, volumes)) / sum(volumes)
-    return round(vwap, 2)
-
-def add_technical_indicators(stock_data):
-    """テクニカル指標を追加"""
-    if not stock_data:
-        return stock_data
-    
-    close_prices = [d['close'] for d in stock_data if d['close'] is not None]
-    open_prices = [d['open'] for d in stock_data if d['open'] is not None]
-    high_prices = [d['high'] for d in stock_data if d['high'] is not None]
-    low_prices = [d['low'] for d in stock_data if d['low'] is not None]
-    volumes = [d['volume'] for d in stock_data if d['volume'] is not None]
-    
-    for i, data_point in enumerate(stock_data):
-        close_up_to_i = close_prices[:i+1]
-        high_up_to_i = high_prices[:i+1]
-        low_up_to_i = low_prices[:i+1]
-        volume_up_to_i = volumes[:i+1]
-        
-        # 移動平均
-        data_point['sma20'] = calculate_sma(close_up_to_i, 20)
-        data_point['sma50'] = calculate_sma(close_up_to_i, 50)
-        data_point['sma200'] = calculate_sma(close_up_to_i, 200)
-        
-        # 指数移動平均
-        data_point['ema21'] = calculate_ema(close_up_to_i, 21)
-        
-        # RSI
-        data_point['rsi14'] = calculate_rsi(close_up_to_i, 14)
-        
-        # ATR
-        data_point['atr14'] = calculate_atr(high_up_to_i, low_up_to_i, close_up_to_i, 14)
-        
-        # VWAP（当日のみ）
-        data_point['vwap'] = calculate_vwap([high_up_to_i[-1]], [low_up_to_i[-1]], [close_up_to_i[-1]], [volume_up_to_i[-1]])
-    
-    return stock_data
 
 def get_symbols_from_csv():
     """target_stocks_latest.csvから銘柄取得"""
     if not os.path.exists(TARGET_STOCKS_CSV):
         logging.error(f"Target stocks file not found: {TARGET_STOCKS_CSV}")
-        return {}
+        return []
     
     df = pd.read_csv(TARGET_STOCKS_CSV)
     
-    symbols_info = {}
-    for _, row in df.iterrows():
-        symbol = row['Symbol']
-        symbols_info[symbol] = {
-            'name': row.get('Company Name', symbol),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A')
-        }
+    if 'Symbol' not in df.columns:
+        logging.error("'Symbol' column not found in CSV")
+        return []
     
-    logging.info(f"Loaded {len(symbols_info)} symbols from CSV")
-    return symbols_info
+    symbols = df['Symbol'].dropna().unique().tolist()
+    symbols = sorted(list(set(symbols)))
+    
+    logging.info(f"Loaded {len(symbols)} unique symbols from CSV")
+    return symbols
 
-def download_price_data_minimal(symbols, days=1000):
-    """直近N日分のデータを取得"""
-    start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-    end_date = datetime.now().strftime('%Y-%m-%d')
+def download_price_data(symbols, start_date, end_date=None, chunk_size=50, delay=1, max_retries=3):
+    """
+    チャンク単位でYahoo Financeからデータ取得
+    既存のfetch_price_data2.pyと同じロジック
+    """
+    if not symbols or not start_date:
+        logging.error("Symbol list or start date is empty.")
+        return None
+
+    if end_date is None:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+
+    logging.info(f"\n{'='*60}")
+    logging.info("DOWNLOADING PRICE DATA")
+    logging.info(f"{'='*60}")
+    logging.info(f"Symbols: {len(symbols)}")
+    logging.info(f"Period: {start_date} to {end_date}")
+    logging.info(f"Chunk size: {chunk_size}, Delay: {delay}s")
+    logging.info(f"{'='*60}\n")
+
+    all_data = []
+    failed_symbols = []
+    total_chunks = (len(symbols) + chunk_size - 1) // chunk_size
     
-    logging.info(f"Downloading {len(symbols)} symbols: {start_date} to {end_date}")
-    
-    all_data = {}
-    chunk_size = 50
-    symbol_list = list(symbols.keys())
-    
-    for i in range(0, len(symbol_list), chunk_size):
-        chunk = symbol_list[i:i + chunk_size]
+    for i in range(0, len(symbols), chunk_size):
+        chunk = symbols[i:i + chunk_size]
         chunk_num = i // chunk_size + 1
-        total_chunks = (len(symbol_list) + chunk_size - 1) // chunk_size
         
-        try:
-            logging.info(f"Chunk {chunk_num}/{total_chunks}...")
-            data = yf.download(chunk, start=start_date, end=end_date, threads=False, progress=False)
-            
-            if not data.empty:
-                for symbol in chunk:
-                    try:
-                        if symbol in data['Close'].columns:
-                            stock_data = []
-                            for date, row in data.iterrows():
-                                stock_data.append({
-                                    'date': date.strftime('%Y-%m-%d'),
-                                    'open': float(row['Open'][symbol]) if not pd.isna(row['Open'][symbol]) else None,
-                                    'high': float(row['High'][symbol]) if not pd.isna(row['High'][symbol]) else None,
-                                    'low': float(row['Low'][symbol]) if not pd.isna(row['Low'][symbol]) else None,
-                                    'close': float(row['Close'][symbol]) if not pd.isna(row['Close'][symbol]) else None,
-                                    'volume': int(row['Volume'][symbol]) if not pd.isna(row['Volume'][symbol]) else 0
-                                })
-                            all_data[symbol] = stock_data
-                    except Exception as e:
-                        logging.warning(f"Failed to process {symbol}: {e}")
+        success = False
+        for retry in range(max_retries):
+            try:
+                logging.info(f"Chunk {chunk_num}/{total_chunks} ({len(chunk)} symbols, retry {retry + 1})...")
                 
-                logging.info(f"✓ Chunk {chunk_num}: {len([s for s in chunk if s in all_data])} symbols")
+                data = yf.download(
+                    chunk, 
+                    start=start_date,
+                    end=end_date,
+                    threads=False,
+                    progress=False
+                )
+                
+                if not data.empty:
+                    all_data.append(data)
+                    successful = data.columns.get_level_values(1).unique().tolist() if len(chunk) > 1 else chunk
+                    logging.info(f"✓ Chunk {chunk_num}: {len(successful)}/{len(chunk)} symbols, {len(data)} rows")
+                    success = True
+                    break
+                else:
+                    logging.warning(f"⚠ Chunk {chunk_num} returned empty data")
+                    
+            except Exception as e:
+                logging.error(f"✗ Chunk {chunk_num} error (retry {retry + 1}): {e}")
+                if retry < max_retries - 1:
+                    time.sleep(delay * 2)
         
-        except Exception as e:
-            logging.error(f"✗ Chunk {chunk_num} error: {e}")
-    
-    return all_data
+        if not success:
+            failed_symbols.extend(chunk)
+        
+        time.sleep(delay)
 
-def save_temp_json(price_data, symbols_info):
-    """一時JSONファイルに保存"""
-    output = {
-        'lastUpdated': datetime.now().isoformat(),
-        'symbols': {}
-    }
+    if failed_symbols:
+        logging.warning(f"\n⚠ {len(failed_symbols)} symbols failed")
+        failed_path = os.path.join(DATA_FOLDER, 'failed_symbols.txt')
+        with open(failed_path, 'w') as f:
+            f.write('\n'.join(failed_symbols))
+        logging.info(f"Failed symbols saved to: {failed_path}")
+
+    if not all_data:
+        logging.error("No data downloaded!")
+        return None
+
+    logging.info("\n✓ Merging chunks...")
+    merged = pd.concat(all_data, axis=1)
     
-    for symbol, price_list in price_data.items():
-        if symbol in symbols_info:
-            # テクニカル指標を追加
-            price_list_with_indicators = add_technical_indicators(price_list)
-            
-            output['symbols'][symbol] = {
-                'name': symbols_info[symbol]['name'],
-                'sector': symbols_info[symbol]['sector'],
-                'industry': symbols_info[symbol]['industry'],
-                'data': price_list_with_indicators
-            }
+    logging.info(f"Final shape: {merged.shape}")
+    logging.info(f"Date range: {merged.index.min().date()} to {merged.index.max().date()}")
+    logging.info(f"Symbols: {len(merged.columns.get_level_values(1).unique())}")
     
-    with open(TEMP_PRICE_JSON, 'w') as f:
-        json.dump(output, f)
-    
-    logging.info(f"✅ Saved {len(output['symbols'])} symbols to {TEMP_PRICE_JSON}")
-    return True
+    return merged
+
+def save_price_data(price_data):
+    """価格データをpickle形式で保存"""
+    try:
+        price_data.to_pickle(TEMP_PRICE_PKL)
+        file_size_mb = os.path.getsize(TEMP_PRICE_PKL) / 1024 / 1024
+        
+        logging.info(f"\n{'='*60}")
+        logging.info("✓ PRICE DATA SAVED")
+        logging.info(f"{'='*60}")
+        logging.info(f"Path: {TEMP_PRICE_PKL}")
+        logging.info(f"Shape: {price_data.shape}")
+        logging.info(f"Size: {file_size_mb:.2f} MB")
+        logging.info(f"{'='*60}\n")
+        
+        return True
+    except Exception as e:
+        logging.error(f"Error saving: {e}")
+        return False
 
 def main():
     """価格データ取得メイン処理"""
-    symbols_info = get_symbols_from_csv()
+    symbols = get_symbols_from_csv()
     
-    if not symbols_info:
+    if not symbols:
         logging.error("No symbols found")
         return False
     
-    price_data = download_price_data_minimal(symbols_info, days=1000)
+    # 1000日前から取得
+    start_date = (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d')
     
-    if not price_data:
+    price_data = download_price_data(symbols, start_date, chunk_size=50, delay=1)
+    
+    if price_data is None:
         logging.error("Failed to download price data")
         return False
     
-    return save_temp_json(price_data, symbols_info)
+    return save_price_data(price_data)
 
 if __name__ == "__main__":
     import sys
