@@ -171,6 +171,17 @@ def load_symbols_info():
             'sector': row.get('Sector', 'N/A'),
             'industry': row.get('Industry', 'N/A')
         }
+
+
+    # ★ 追加: S&P500情報を追加（RRS計算用）
+    if '^GSPC' not in symbols_info:
+        symbols_info['^GSPC'] = {
+            'name': 'S&P 500',
+            'sector': 'Index',
+            'industry': 'Index'
+        }
+        logging.info("Added ^GSPC (S&P 500) info for RRS calculation")
+
     
     logging.info(f"Loaded info for {len(symbols_info)} symbols")
     return symbols_info

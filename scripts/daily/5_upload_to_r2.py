@@ -1,8 +1,11 @@
 """
 5_upload_to_r2.py
 
-data/r2/ 配下のJSONファイルをCloudflare R2にアップロード（並列版）
-ThreadPoolExecutorで高速化
+data/daily/r2/ 配下のJSONファイルをCloudflare R2にアップロード（並列版 + 既存チェック最適化）
+- R2のファイルリストを一括取得してメモリ上で比較
+- 過去年度: R2に既存の場合はスキップ
+- 当年: 常に上書きアップロード
+- ThreadPoolExecutorで高速化
 """
 import boto3
 import os
@@ -10,35 +13,106 @@ from pathlib import Path
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
+from datetime import datetime
+from dotenv import load_dotenv
+
+# .envファイルを読み込む（プロジェクトルートの.env）
+ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+load_dotenv(dotenv_path=ENV_PATH)
 
 DATA_FOLDER = "data"
-R2_OUTPUT = os.path.join(DATA_FOLDER, "r2")
+R2_OUTPUT = os.path.join(DATA_FOLDER, "daily", "r2")  # ★ 修正: daily/r2
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def upload_single_file(s3_client, bucket_name, file_path, key):
+def get_existing_files_in_r2(s3_client, bucket_name):
     """
-    単一ファイルをR2にアップロード
+    R2バケット内の全ファイルのキーをセットで取得（一括）
+    
+    Returns:
+        set: R2に存在するファイルキーのセット
+    """
+    logging.info("Fetching existing files list from R2...")
+    start_time = time.time()
+    
+    existing_files = set()
+    
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=bucket_name)
+        
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    existing_files.add(obj['Key'])
+        
+        elapsed = time.time() - start_time
+        logging.info(f"✅ Found {len(existing_files)} existing files in R2 ({elapsed:.1f}s)")
+        
+    except Exception as e:
+        logging.warning(f"Failed to fetch existing files: {e}")
+        # エラーの場合は空セットを返す（全ファイルをアップロード）
+        return set()
+    
+    return existing_files
+
+def should_upload_file(key, current_year, existing_files):
+    """
+    アップロードすべきか判定（高速版）
+    
+    - 当年ディレクトリ: 常にアップロード
+    - metadata: 常にアップロード
+    - 過去年度: R2に存在しない場合のみアップロード
+    
+    Args:
+        key: R2のオブジェクトキー
+        current_year: 現在の年
+        existing_files: R2に存在するファイルキーのセット
+    
+    Returns:
+        bool: アップロードすべき場合 True
+    """
+    # 当年ディレクトリ（stocks/daily/core/2026/, scores/RS_scores/individual/2026.json等）
+    if f'/{current_year}/' in key or f'/{current_year}.json' in key:
+        return True
+    
+    # metadata は常にアップロード
+    if key.startswith('metadata/'):
+        return True
+    
+    # 過去年度: セット内検索（O(1)）
+    return key not in existing_files
+
+def upload_single_file(s3_client, bucket_name, file_path, key, max_retries=3):
+    """
+    単一ファイルをR2にアップロード（リトライ機構付き）
     
     Returns:
         tuple: (key, success, error_message)
     """
-    try:
-        with open(file_path, 'rb') as f:
-            s3_client.put_object(
-                Bucket=bucket_name,
-                Key=key,
-                Body=f,
-                ContentType='application/json',
-                CacheControl='public, max-age=3600'
-            )
-        return key, True, None
-    except Exception as e:
-        return key, False, str(e)
+    for attempt in range(max_retries):
+        try:
+            # 各リトライで新しいクライアントを使用（ストリームエラー回避）
+            with open(file_path, 'rb') as f:
+                s3_client.put_object(
+                    Bucket=bucket_name,
+                    Key=key,
+                    Body=f,
+                    ContentType='application/json',
+                    CacheControl='public, max-age=3600'
+                )
+            return key, True, None
+        except Exception as e:
+            if attempt < max_retries - 1:
+                time.sleep(1)  # 1秒待機してリトライ
+                continue
+            else:
+                return key, False, str(e)
 
 def upload_to_r2_parallel(max_workers=20):
     """
-    data/r2/ 配下の全JSONファイルをR2に並列アップロード
+    data/daily/r2/ 配下の全JSONファイルをR2に並列アップロード
+    過去年度は既存チェックでスキップ（最適化版）
     
     Args:
         max_workers: 並列度（デフォルト: 20）
@@ -66,6 +140,7 @@ def upload_to_r2_parallel(max_workers=20):
         raise FileNotFoundError(f"{r2_dir} does not exist")
     
     # 全JSONファイルをリストアップ
+    logging.info("Scanning local files...")
     json_files = list(r2_dir.glob('**/*.json'))
     csv_files = list(r2_dir.glob('**/*.csv'))
     all_files = json_files + csv_files
@@ -76,8 +151,43 @@ def upload_to_r2_parallel(max_workers=20):
         logging.warning("No files to upload")
         return False
     
-    logging.info(f"Found {total_files} files to upload")
-    logging.info(f"Using {max_workers} parallel workers")
+    logging.info(f"Found {total_files} local files")
+    
+    # 現在の年を取得
+    current_year = datetime.now().year
+    
+    # R2の既存ファイルリストを一括取得
+    existing_files = get_existing_files_in_r2(s3, bucket_name)
+    
+    # アップロード対象をフィルタリング
+    logging.info(f"Filtering files to upload (current year: {current_year})...")
+    files_to_upload = []
+    skipped_count = 0
+    
+    for file_path in all_files:
+        # R2のキー: stocks/daily/core/2026/AAPL.json
+        relative_path = file_path.relative_to(r2_dir)
+        key = str(relative_path).replace('\\', '/')  # Windows対応
+        
+        if should_upload_file(key, current_year, existing_files):
+            files_to_upload.append((file_path, key))
+        else:
+            skipped_count += 1
+    
+    upload_count = len(files_to_upload)
+    
+    logging.info(f"\n{'='*60}")
+    logging.info("UPLOAD PLAN")
+    logging.info(f"{'='*60}")
+    logging.info(f"Total files found: {total_files}")
+    logging.info(f"Files to upload: {upload_count}")
+    logging.info(f"Files to skip: {skipped_count} (already exist in R2)")
+    logging.info(f"Parallel workers: {max_workers}")
+    logging.info(f"{'='*60}\n")
+    
+    if upload_count == 0:
+        logging.info("✅ No files need upload. All files are up to date.")
+        return True
     
     uploaded_count = 0
     failed_count = 0
@@ -87,14 +197,10 @@ def upload_to_r2_parallel(max_workers=20):
     
     # ThreadPoolExecutorで並列アップロード
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # 全ファイルのアップロードタスクを投入
+        # アップロード対象のタスクを投入
         future_to_file = {}
         
-        for file_path in all_files:
-            # R2のキー: stocks/daily/core/AAPL.json
-            relative_path = file_path.relative_to(r2_dir)
-            key = str(relative_path).replace('\\', '/')  # Windows対応
-            
+        for file_path, key in files_to_upload:
             future = executor.submit(upload_single_file, s3, bucket_name, file_path, key)
             future_to_file[future] = (file_path, key)
         
@@ -112,13 +218,13 @@ def upload_to_r2_parallel(max_workers=20):
                     failed_files.append((result_key, error_msg))
                 
                 # 進捗表示（100件ごと、または最後）
-                if i % 100 == 0 or i == total_files:
+                if i % 100 == 0 or i == upload_count:
                     elapsed = time.time() - start_time
                     rate = i / elapsed if elapsed > 0 else 0
-                    remaining = (total_files - i) / rate if rate > 0 else 0
+                    remaining = (upload_count - i) / rate if rate > 0 else 0
                     
                     logging.info(
-                        f"Progress: {i}/{total_files} ({i/total_files*100:.1f}%) - "
+                        f"Progress: {i}/{upload_count} ({i/upload_count*100:.1f}%) - "
                         f"Speed: {rate:.1f} files/sec, ETA: {remaining:.1f}s"
                     )
             
@@ -133,19 +239,22 @@ def upload_to_r2_parallel(max_workers=20):
     logging.info(f"\n{'='*60}")
     logging.info("UPLOAD SUMMARY")
     logging.info(f"{'='*60}")
-    logging.info(f"✅ Uploaded: {uploaded_count}/{total_files} files")
+    logging.info(f"✅ Uploaded: {uploaded_count}/{upload_count} files")
     logging.info(f"⏱️  Total time: {elapsed:.1f}s")
-    logging.info(f"🚀 Speed: {total_files/elapsed:.1f} files/sec")
+    logging.info(f"🚀 Speed: {upload_count/elapsed:.1f} files/sec")
+    
+    if skipped_count > 0:
+        logging.info(f"⏭️  Skipped: {skipped_count} files (already in R2)")
     
     if failed_count > 0:
-        logging.warning(f"❌ Failed: {failed_count} files")
+        logging.warning(f"\n❌ Failed: {failed_count} files")
         logging.warning(f"Failed files (first 10):")
         for key, error in failed_files[:10]:
             logging.warning(f"  - {key}: {error}")
         if len(failed_files) > 10:
             logging.warning(f"  ... and {len(failed_files) - 10} more")
     
-    logging.info(f"Bucket: {bucket_name}")
+    logging.info(f"\nBucket: {bucket_name}")
     logging.info(f"Endpoint: {os.environ['R2_ENDPOINT']}")
     logging.info(f"{'='*60}\n")
     
@@ -154,7 +263,7 @@ def upload_to_r2_parallel(max_workers=20):
 def main():
     """R2アップロードメイン処理"""
     logging.info("="*60)
-    logging.info("UPLOAD TO CLOUDFLARE R2 (PARALLEL)")
+    logging.info("UPLOAD TO CLOUDFLARE R2 (PARALLEL + SMART SKIP)")
     logging.info("="*60)
     
     try:
