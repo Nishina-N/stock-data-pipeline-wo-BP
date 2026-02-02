@@ -8,6 +8,10 @@ import boto3
 import os
 import logging
 import sys
+from dotenv import load_dotenv
+
+# .envファイルを読み込む
+load_dotenv()
 
 DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
