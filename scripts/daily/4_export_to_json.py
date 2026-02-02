@@ -102,8 +102,6 @@ def export_core_files(price_data, rs_rrs_dict):
     failed = []
     
     for symbol, info in price_data['symbols'].items():
-        if symbol == '^GSPC':  # S&P500は除外
-            continue
         
         try:
             # データを年別にグループ化
@@ -168,9 +166,7 @@ def export_indicator_files(price_data):
     failed = []
     
     for symbol, info in price_data['symbols'].items():
-        if symbol == '^GSPC':  # S&P500は除外
-            continue
-        
+
         try:
             year_groups = group_data_by_year(info['data'])
             
