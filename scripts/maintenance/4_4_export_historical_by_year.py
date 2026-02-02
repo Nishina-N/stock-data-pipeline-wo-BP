@@ -67,13 +67,14 @@ def load_symbols_info():
     logging.info(f"Loaded info for {len(symbols_info)} symbols")
     return symbols_info
 
-def export_year_data(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_dict, rrs_percentile_dict):
+def export_year_data_optimized(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_dict, rrs_percentile_dict):
     """
     指定年のデータを export（最適化版）
     
     - .iterrows() → .values で高速化
     - 日付変換を一括処理
     - RS/RRS を事前に配列化
+    - 価格データが全て null の銘柄はスキップ
     """
     import numpy as np
     
@@ -103,9 +104,13 @@ def export_year_data(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_di
     symbols = df.columns.levels[0] if isinstance(df.columns, pd.MultiIndex) else [df.columns[0]]
     
     count = 0
+    skipped_null = 0
     failed = []
     
     for symbol in symbols:
+        # if symbol == '^GSPC':  # コメントアウト
+        #     continue
+        
         if symbol not in symbols_info:
             continue
         
@@ -121,6 +126,15 @@ def export_year_data(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_di
             low_vals = symbol_data['Low'].values
             close_vals = symbol_data['Close'].values
             volume_vals = symbol_data['Volume'].values
+            
+            # ★ 価格データが全て null かチェック
+            if (np.all(np.isnan(open_vals)) and 
+                np.all(np.isnan(high_vals)) and 
+                np.all(np.isnan(low_vals)) and 
+                np.all(np.isnan(close_vals))):
+                logging.debug(f"Skipping {symbol} for year {year}: All price data is null")
+                skipped_null += 1
+                continue
             
             sma20_vals = symbol_data['sma20'].values
             sma50_vals = symbol_data['sma50'].values
@@ -212,6 +226,8 @@ def export_year_data(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_di
             failed.append(symbol)
     
     logging.info(f"✅ Exported {count} symbols for year {year}")
+    if skipped_null > 0:
+        logging.info(f"⏭️  Skipped {skipped_null} symbols (all price data null)")
     if failed:
         logging.warning(f"⚠️  Failed: {len(failed)} symbols")
     
@@ -259,7 +275,7 @@ def main():
     rrs_percentile_dict = {date: rrs_percentile.loc[date] for date in rrs_percentile.index}
     
     # Export
-    count = export_year_data(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_dict, rrs_percentile_dict)
+    count = export_year_data_optimized(df, year, symbols_info, rs_dict, rrs_dict, rs_percentile_dict, rrs_percentile_dict)
     
     if count > 0:
         logging.info("="*60)

@@ -87,10 +87,14 @@ def main():
     
     # 削除対象フォルダ
     folders_to_clear = [
-        "stocks/daily/core/2023/",
-        "stocks/daily/core/2024/",
-        "stocks/daily/indicators/standard/2023/",
-        "stocks/daily/indicators/standard/2024/"
+        "stocks/daily/core/1927/",
+        "stocks/daily/core/1928/",
+        "stocks/daily/core/1929/",
+        "stocks/daily/core/1930/",
+        "stocks/daily/indicators/standard/1927/",
+        "stocks/daily/indicators/standard/1928/",
+        "stocks/daily/indicators/standard/1929/",
+        "stocks/daily/indicators/standard/1930/"
     ]
     
     logging.info("="*60)

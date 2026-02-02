@@ -1,11 +1,12 @@
 """
 5_upload_to_r2.py
 
-data/daily/r2/ 配下のJSONファイルをCloudflare R2にアップロード（並列版 + 既存チェック最適化）
+data/daily/r2/ 配下のJSONファイルをCloudflare R2にアップロード（並列版 + メモリリーク対策）
 - R2のファイルリストを一括取得してメモリ上で比較
 - 過去年度: R2に既存の場合はスキップ
 - 当年: 常に上書きアップロード
 - ThreadPoolExecutorで高速化
+- メモリリーク対策: 各スレッドで新しいS3クライアント作成
 """
 import boto3
 import os
@@ -21,11 +22,11 @@ ENV_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__
 load_dotenv(dotenv_path=ENV_PATH)
 
 DATA_FOLDER = "data"
-R2_OUTPUT = os.path.join(DATA_FOLDER, "daily", "r2")  # ★ 修正: daily/r2
+R2_OUTPUT = os.path.join(DATA_FOLDER, "daily", "r2")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def get_existing_files_in_r2(s3_client, bucket_name):
+def get_existing_files_in_r2(endpoint, access_key, secret_key, bucket_name):
     """
     R2バケット内の全ファイルのキーをセットで取得（一括）
     
@@ -36,8 +37,17 @@ def get_existing_files_in_r2(s3_client, bucket_name):
     start_time = time.time()
     
     existing_files = set()
+    s3_client = None
     
     try:
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name='auto'
+        )
+        
         paginator = s3_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=bucket_name)
         
@@ -51,8 +61,14 @@ def get_existing_files_in_r2(s3_client, bucket_name):
         
     except Exception as e:
         logging.warning(f"Failed to fetch existing files: {e}")
-        # エラーの場合は空セットを返す（全ファイルをアップロード）
         return set()
+    
+    finally:
+        if s3_client is not None:
+            try:
+                s3_client.close()
+            except:
+                pass
     
     return existing_files
 
@@ -83,36 +99,56 @@ def should_upload_file(key, current_year, existing_files):
     # 過去年度: セット内検索（O(1)）
     return key not in existing_files
 
-def upload_single_file(s3_client, bucket_name, file_path, key, max_retries=3):
+def upload_single_file_with_new_client(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
     """
-    単一ファイルをR2にアップロード（リトライ機構付き）
+    単一ファイルをR2にアップロード（各スレッドで新しいクライアント作成）
+    メモリリーク対策: 各アップロードで新しいS3クライアントを作成・破棄
     
     Returns:
         tuple: (key, success, error_message)
     """
-    for attempt in range(max_retries):
-        try:
-            # 各リトライで新しいクライアントを使用（ストリームエラー回避）
-            with open(file_path, 'rb') as f:
-                s3_client.put_object(
-                    Bucket=bucket_name,
-                    Key=key,
-                    Body=f,
-                    ContentType='application/json',
-                    CacheControl='public, max-age=3600'
-                )
-            return key, True, None
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(1)  # 1秒待機してリトライ
-                continue
-            else:
-                return key, False, str(e)
+    s3_client = None
+    
+    try:
+        # ★ 各スレッドで新しいクライアントを作成
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name='auto'
+        )
+        
+        for attempt in range(max_retries):
+            try:
+                with open(file_path, 'rb') as f:
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=key,
+                        Body=f,
+                        ContentType='application/json',
+                        CacheControl='public, max-age=3600'
+                    )
+                return key, True, None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    return key, False, str(e)
+    
+    finally:
+        # ★ 明示的にクライアントをクローズ（メモリ解放）
+        if s3_client is not None:
+            try:
+                s3_client.close()
+            except:
+                pass
 
 def upload_to_r2_parallel(max_workers=20):
     """
     data/daily/r2/ 配下の全JSONファイルをR2に並列アップロード
-    過去年度は既存チェックでスキップ（最適化版）
+    過去年度は既存チェックでスキップ（最適化版 + メモリリーク対策）
     
     Args:
         max_workers: 並列度（デフォルト: 20）
@@ -124,16 +160,12 @@ def upload_to_r2_parallel(max_workers=20):
     if missing:
         raise ValueError(f"Missing environment variables: {', '.join(missing)}")
     
-    # S3互換クライアント作成
-    s3 = boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto'
-    )
-    
+    # ★ 認証情報を変数に保存（各スレッドで使用）
+    endpoint = os.environ['R2_ENDPOINT']
+    access_key = os.environ['R2_ACCESS_KEY_ID']
+    secret_key = os.environ['R2_SECRET_ACCESS_KEY']
     bucket_name = os.environ['R2_BUCKET_NAME']
+    
     r2_dir = Path(R2_OUTPUT)
     
     if not r2_dir.exists():
@@ -157,7 +189,7 @@ def upload_to_r2_parallel(max_workers=20):
     current_year = datetime.now().year
     
     # R2の既存ファイルリストを一括取得
-    existing_files = get_existing_files_in_r2(s3, bucket_name)
+    existing_files = get_existing_files_in_r2(endpoint, access_key, secret_key, bucket_name)
     
     # アップロード対象をフィルタリング
     logging.info(f"Filtering files to upload (current year: {current_year})...")
@@ -197,11 +229,15 @@ def upload_to_r2_parallel(max_workers=20):
     
     # ThreadPoolExecutorで並列アップロード
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        # アップロード対象のタスクを投入
         future_to_file = {}
         
         for file_path, key in files_to_upload:
-            future = executor.submit(upload_single_file, s3, bucket_name, file_path, key)
+            # ★ 認証情報を各スレッドに渡す
+            future = executor.submit(
+                upload_single_file_with_new_client,
+                endpoint, access_key, secret_key, bucket_name,
+                file_path, key
+            )
             future_to_file[future] = (file_path, key)
         
         # 完了したタスクから順次処理
@@ -255,7 +291,7 @@ def upload_to_r2_parallel(max_workers=20):
             logging.warning(f"  ... and {len(failed_files) - 10} more")
     
     logging.info(f"\nBucket: {bucket_name}")
-    logging.info(f"Endpoint: {os.environ['R2_ENDPOINT']}")
+    logging.info(f"Endpoint: {endpoint}")
     logging.info(f"{'='*60}\n")
     
     return failed_count == 0

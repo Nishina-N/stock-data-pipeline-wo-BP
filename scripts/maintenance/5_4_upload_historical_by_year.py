@@ -1,12 +1,12 @@
 """
 5_4_upload_historical_by_year.py
 
-指定年の historical data を R2 にアップロード
+指定年の historical data を R2 にアップロード（メモリリーク対策版）
 - stocks/daily/core/{year}/*.json
 - stocks/daily/indicators/standard/{year}/*.json
 
 Usage:
-  python scripts/maintenance/5_4_upload_historical_by_year.py --year 2024
+  python scripts/maintenance/5_4_upload_historical_by_year.py --year 2024 --workers 10
 """
 import boto3
 import os
@@ -27,38 +27,59 @@ R2_OUTPUT = os.path.join(MAINTENANCE_FOLDER, "r2")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def upload_single_file(s3_client, bucket_name, file_path, key, max_retries=3):
+def upload_single_file_with_new_client(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
     """
-    単一ファイルをR2にアップロード（リトライ機構付き）
+    単一ファイルをR2にアップロード（各スレッドで新しいクライアント作成）
+    メモリリーク対策: 各アップロードで新しいS3クライアントを作成・破棄
     
     Returns:
         tuple: (key, success, error_message)
     """
-    for attempt in range(max_retries):
-        try:
-            with open(file_path, 'rb') as f:
-                s3_client.put_object(
-                    Bucket=bucket_name,
-                    Key=key,
-                    Body=f,
-                    ContentType='application/json',
-                    CacheControl='public, max-age=3600'
-                )
-            return key, True, None
-        except Exception as e:
-            if attempt < max_retries - 1:
-                time.sleep(1)
-                continue
-            else:
-                return key, False, str(e)
+    s3_client = None
+    
+    try:
+        # ★ 各スレッドで新しいクライアントを作成
+        s3_client = boto3.client(
+            's3',
+            endpoint_url=endpoint,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            region_name='auto'
+        )
+        
+        for attempt in range(max_retries):
+            try:
+                with open(file_path, 'rb') as f:
+                    s3_client.put_object(
+                        Bucket=bucket_name,
+                        Key=key,
+                        Body=f,
+                        ContentType='application/json',
+                        CacheControl='public, max-age=3600'
+                    )
+                return key, True, None
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(1)
+                    continue
+                else:
+                    return key, False, str(e)
+    
+    finally:
+        # ★ 明示的にクライアントをクローズ（メモリ解放）
+        if s3_client is not None:
+            try:
+                s3_client.close()
+            except:
+                pass
 
-def upload_year_to_r2(year, max_workers=5):
+def upload_year_to_r2(year, max_workers=10):
     """
     指定年のデータをR2にアップロード
     
     Args:
         year: 年（例: 2024）
-        max_workers: 並列度（デフォルト: 5、接続エラー回避）
+        max_workers: 並列度（デフォルト: 10）
     
     Returns:
         bool: 成功した場合 True
@@ -70,16 +91,12 @@ def upload_year_to_r2(year, max_workers=5):
     if missing:
         raise ValueError(f"Missing environment variables: {', '.join(missing)}")
     
-    # S3互換クライアント作成
-    s3 = boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto'
-    )
-    
+    # ★ 認証情報を変数に保存（各スレッドで使用）
+    endpoint = os.environ['R2_ENDPOINT']
+    access_key = os.environ['R2_ACCESS_KEY_ID']
+    secret_key = os.environ['R2_SECRET_ACCESS_KEY']
     bucket_name = os.environ['R2_BUCKET_NAME']
+    
     r2_dir = Path(R2_OUTPUT)
     
     if not r2_dir.exists():
@@ -133,7 +150,12 @@ def upload_year_to_r2(year, max_workers=5):
         future_to_file = {}
         
         for file_path, key in files_to_upload:
-            future = executor.submit(upload_single_file, s3, bucket_name, file_path, key)
+            # ★ 認証情報を各スレッドに渡す
+            future = executor.submit(
+                upload_single_file_with_new_client,
+                endpoint, access_key, secret_key, bucket_name,
+                file_path, key
+            )
             future_to_file[future] = (file_path, key)
         
         # 完了したタスクから順次処理
@@ -184,7 +206,7 @@ def upload_year_to_r2(year, max_workers=5):
             logging.warning(f"  ... and {len(failed_files) - 10} more")
     
     logging.info(f"\nBucket: {bucket_name}")
-    logging.info(f"Endpoint: {os.environ['R2_ENDPOINT']}")
+    logging.info(f"Endpoint: {endpoint}")
     logging.info(f"{'='*60}\n")
     
     return failed_count == 0
@@ -192,7 +214,7 @@ def upload_year_to_r2(year, max_workers=5):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--year', type=int, required=True, help='Year to upload (e.g., 2024)')
-    parser.add_argument('--workers', type=int, default=20, help='Number of parallel workers (default: 5)')
+    parser.add_argument('--workers', type=int, default=10, help='Number of parallel workers (default: 10)')
     args = parser.parse_args()
     
     year = args.year

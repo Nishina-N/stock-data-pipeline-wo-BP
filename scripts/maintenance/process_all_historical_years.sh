@@ -1,7 +1,7 @@
 #!/bin/bash
 # process_all_historical_years.sh
 
-for year in {1927..2024}; do
+for year in {1976..2024}; do
   echo "Processing year $year..."
   
   # Export
@@ -14,6 +14,9 @@ for year in {1927..2024}; do
   rm -rf data/maintenance/r2/stocks/daily/core/$year
   rm -rf data/maintenance/r2/stocks/daily/indicators/standard/$year
   
+  # ★ 少し待機（メモリ解放）
+  sleep 2
+
   echo "Year $year completed!"
   echo ""
 done
