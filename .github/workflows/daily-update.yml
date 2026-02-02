@@ -26,10 +26,15 @@ jobs:
       - name: Create data directory
         run: mkdir -p data
       
-      - name: 1. Fetch target stocks
+      # ★ 追加: 0. Download target stocks from R2 (or fetch from FMP if not exists)
+      - name: 0. Download target stocks
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
-        run: python scripts/daily/1_fetch_target_stocks.py
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python scripts/daily/0_download_target_stocks.py
       
       - name: 2. Fetch price data (1000 days)
         run: python scripts/daily/2_fetch_price_data.py
