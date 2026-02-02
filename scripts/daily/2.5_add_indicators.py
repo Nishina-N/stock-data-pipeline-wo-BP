@@ -107,12 +107,12 @@ def add_technical_indicators_vectorized(price_data):
 
 def convert_to_json(indicator_data, symbols_info):
     """
-    指標データをJSON形式に変換
+    指標データをJSON形式に変換（最適化版）
     
     indicator_data: {symbol: {indicator: Series}}
     symbols_info: {symbol: {'name': ..., 'sector': ..., 'industry': ...}}
     """
-    logging.info("Converting to JSON format...")
+    logging.info("Converting to JSON format (optimized)...")
     
     output = {
         'lastUpdated': datetime.now().isoformat(),
@@ -123,27 +123,45 @@ def convert_to_json(indicator_data, symbols_info):
         if symbol not in symbols_info:
             continue
         
-        # DataFrameに変換
+        # ★ DataFrameに変換
         df = pd.DataFrame(data_dict)
         
-        # JSON用のリストに変換
-        data_list = []
-        for date, row in df.iterrows():
-            data_list.append({
-                'date': date.strftime('%Y-%m-%d'),
-                'open': round(float(row['open']), 2) if not pd.isna(row['open']) else None,
-                'high': round(float(row['high']), 2) if not pd.isna(row['high']) else None,
-                'low': round(float(row['low']), 2) if not pd.isna(row['low']) else None,
-                'close': round(float(row['close']), 2) if not pd.isna(row['close']) else None,
-                'volume': int(row['volume']) if not pd.isna(row['volume']) else 0,
-                'sma20': round(float(row['sma20']), 2) if not pd.isna(row['sma20']) else None,
-                'sma50': round(float(row['sma50']), 2) if not pd.isna(row['sma50']) else None,
-                'sma200': round(float(row['sma200']), 2) if not pd.isna(row['sma200']) else None,
-                'ema21': round(float(row['ema21']), 2) if not pd.isna(row['ema21']) else None,
-                'rsi14': round(float(row['rsi14']), 2) if not pd.isna(row['rsi14']) else None,
-                'atr14': round(float(row['atr14']), 2) if not pd.isna(row['atr14']) else None,
-                'vwap': round(float(row['vwap']), 2) if not pd.isna(row['vwap']) else None
-            })
+        # ★ 日付を一括変換
+        dates = df.index.strftime('%Y-%m-%d').tolist()
+        
+        # ★ NumPy配列として取得（高速アクセス）
+        open_vals = df['open'].values
+        high_vals = df['high'].values
+        low_vals = df['low'].values
+        close_vals = df['close'].values
+        volume_vals = df['volume'].values
+        sma20_vals = df['sma20'].values
+        sma50_vals = df['sma50'].values
+        sma200_vals = df['sma200'].values
+        ema21_vals = df['ema21'].values
+        rsi14_vals = df['rsi14'].values
+        atr14_vals = df['atr14'].values
+        vwap_vals = df['vwap'].values
+        
+        # ★ リスト内包表記で一括変換
+        data_list = [
+            {
+                'date': dates[i],
+                'open': None if np.isnan(open_vals[i]) else round(float(open_vals[i]), 2),
+                'high': None if np.isnan(high_vals[i]) else round(float(high_vals[i]), 2),
+                'low': None if np.isnan(low_vals[i]) else round(float(low_vals[i]), 2),
+                'close': None if np.isnan(close_vals[i]) else round(float(close_vals[i]), 2),
+                'volume': 0 if np.isnan(volume_vals[i]) else int(volume_vals[i]),
+                'sma20': None if np.isnan(sma20_vals[i]) else round(float(sma20_vals[i]), 2),
+                'sma50': None if np.isnan(sma50_vals[i]) else round(float(sma50_vals[i]), 2),
+                'sma200': None if np.isnan(sma200_vals[i]) else round(float(sma200_vals[i]), 2),
+                'ema21': None if np.isnan(ema21_vals[i]) else round(float(ema21_vals[i]), 2),
+                'rsi14': None if np.isnan(rsi14_vals[i]) else round(float(rsi14_vals[i]), 2),
+                'atr14': None if np.isnan(atr14_vals[i]) else round(float(atr14_vals[i]), 2),
+                'vwap': None if np.isnan(vwap_vals[i]) else round(float(vwap_vals[i]), 2)
+            }
+            for i in range(len(dates))
+        ]
         
         output['symbols'][symbol] = {
             'name': symbols_info[symbol]['name'],
