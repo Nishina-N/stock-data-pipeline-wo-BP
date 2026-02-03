@@ -45,23 +45,23 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python scripts/daily/0_download_target_stocks.py
-        timeout-minutes: 10
+        timeout-minutes: 20
       
       - name: 2. Fetch price data (1000 days)
         run: python scripts/daily/2_fetch_price_data.py
-        timeout-minutes: 15
+        timeout-minutes: 30
       
       - name: 2.5. Add technical indicators
         run: python scripts/daily/2.5_add_indicators.py
-        timeout-minutes: 10
+        timeout-minutes: 20
       
       - name: 3. Calculate RS and RRS
         run: python scripts/daily/3_calculate_rs.py
-        timeout-minutes: 10
+        timeout-minutes: 20
       
       - name: 4. Export to JSON (R2 format)
         run: python scripts/daily/4_export_to_json.py
-        timeout-minutes: 10
+        timeout-minutes: 20
       
       - name: 5. Upload to R2
         env:
@@ -70,7 +70,7 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python scripts/daily/5_upload_to_r2.py
-        timeout-minutes: 15
+        timeout-minutes: 30
       
       - name: Cleanup temporary files
         if: always()
