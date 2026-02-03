@@ -8,12 +8,10 @@ R2 ストレージに保存された株式データへのアクセス方法。
 
 以下の認証情報を使用してデータにアクセスできます（**読み取り専用**）：
 ```bash
-R2_ENDPOINT=https://90c99ec69c4bade0361ceab347ebdb1d.r2.cloudflarestorage.com
-R2_BUCKET_NAME=stock-data
-
-R2_ACCESS_KEY_ID=[別途共有]
-R2_SECRET_ACCESS_KEY=[別途共有]
-
+R2_ENDPOINT=https://[account-id].r2.cloudflarestorage.com
+R2_ACCESS_KEY_ID=[public-readonly-key-id]
+R2_SECRET_ACCESS_KEY=[public-readonly-secret-key]
+R2_BUCKET_NAME=[bucket-name]
 ```
 
 ⚠️ **注意**: この認証情報は読み取り専用です。データの変更・削除はできません。

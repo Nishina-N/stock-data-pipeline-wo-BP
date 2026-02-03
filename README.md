@@ -347,6 +347,16 @@ python3 scripts/daily/5_upload_to_r2.py
 
 ---
 
+## 📡 外部アクセス
+
+データを利用したい開発者向けのアクセス方法は [`docs/API_ACCESS.md`](docs/API_ACCESS.md) を参照してください。
+
+- 読み取り専用 API が利用可能
+- Cloudflare Workers API 経由でのアクセス推奨
+- 直接 R2 アクセスも可能（AWS SDK 互換）
+
+---
+
 ## 🤝 貢献
 
 このリポジトリは private です。
