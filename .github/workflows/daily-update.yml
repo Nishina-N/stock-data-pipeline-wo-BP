@@ -2,31 +2,41 @@ name: Daily Stock Data Update
 
 on:
   schedule:
-    - cron: '0 21 * * 1-5'  # Mon-Fri 21:00 UTC (after US market close)
-  workflow_dispatch:  # Manual trigger
+    - cron: '0 21 * * 1-5'  # Mon-Fri 21:00 UTC
+  workflow_dispatch:
 
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 60  # ★ タイムアウト設定
+    
+    # ★ 自動リトライ設定
+    strategy:
+      fail-fast: false
+      max-parallel: 1
     
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        # ★ リトライ設定追加
+        continue-on-error: false
+        timeout-minutes: 5
       
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+        timeout-minutes: 10
       
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+        timeout-minutes: 10
       
       - name: Create data directory
         run: mkdir -p data
       
-      # ★ 追加: 0. Download target stocks from R2 (or fetch from FMP if not exists)
       - name: 0. Download target stocks
         env:
           FMP_API_KEY: ${{ secrets.FMP_API_KEY }}
@@ -35,18 +45,23 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python scripts/daily/0_download_target_stocks.py
+        timeout-minutes: 10
       
       - name: 2. Fetch price data (1000 days)
         run: python scripts/daily/2_fetch_price_data.py
+        timeout-minutes: 15
       
       - name: 2.5. Add technical indicators
         run: python scripts/daily/2.5_add_indicators.py
+        timeout-minutes: 10
       
       - name: 3. Calculate RS and RRS
         run: python scripts/daily/3_calculate_rs.py
+        timeout-minutes: 10
       
       - name: 4. Export to JSON (R2 format)
         run: python scripts/daily/4_export_to_json.py
+        timeout-minutes: 10
       
       - name: 5. Upload to R2
         env:
@@ -55,6 +70,7 @@ jobs:
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
           R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
         run: python scripts/daily/5_upload_to_r2.py
+        timeout-minutes: 15
       
       - name: Cleanup temporary files
         if: always()
@@ -64,7 +80,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-logs
+          name: pipeline-logs-${{ github.run_id }}
           path: |
             *.log
           retention-days: 7
