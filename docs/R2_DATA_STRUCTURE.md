@@ -8,22 +8,26 @@
 ```
 r2://your-bucket/
 ├── stocks/
-│   └── daily/
-│       ├── core/              # 価格データ + RS/RRS スコア
-│       │   ├── 1927/
-│       │   │   ├── AAPL.json
-│       │   │   ├── MSFT.json
-│       │   │   └── ...
-│       │   ├── 1928/
-│       │   └── ...
-│       │   └── 2026/
-│       └── indicators/
-│           └── standard/      # テクニカル指標
-│               ├── 1927/
-│               │   ├── AAPL.json
-│               │   ├── MSFT.json
-│               │   └── ...
-│               └── ...
+│   ├── daily/
+│   │   ├── core/              # 価格データ + RS/RRS スコア
+│   │   │   ├── 1927/
+│   │   │   │   ├── AAPL.json
+│   │   │   │   ├── MSFT.json
+│   │   │   │   └── ...
+│   │   │   ├── 1928/
+│   │   │   └── ...
+│   │   │   └── 2026/
+│   │   └── indicators/
+│   │       └── standard/      # テクニカル指標
+│   │           ├── 1927/
+│   │           │   ├── AAPL.json
+│   │           │   ├── MSFT.json
+│   │           │   └── ...
+│   │           └── ...
+│   └── fundamentals/          # 四半期財務データ
+│       ├── AAPL.json
+│       ├── MSFT.json
+│       └── ...
 ├── scores/
 │   ├── RS_scores/            # Relative Strength スコア
 │   │   ├── individual/
@@ -128,9 +132,81 @@ r2://your-bucket/
 - `atr14`: Average True Range（14日）
 - `vwap`: Volume Weighted Average Price
 
+
+### 3. Fundamental Data (`stocks/fundamentals/quarterly/{year}/{symbol}.json`)
+
+**説明**: 四半期ごとの財務データ（2000年〜現在、最大120四半期）
+
+**ファイルパス例**: `stocks/fundamentals/AAPL.json`
+
+**データソース**: Financial Modeling Prep API から以下の4つのステートメントを取得・統合
+- Income Statement（損益計算書）
+- Cash Flow Statement（キャッシュフロー計算書）
+- Balance Sheet（貸借対照表）
+- Key Metrics（主要指標）
+
+**データ構造**:
+```json
+{
+  "ticker": "AAPL",
+  "data": [
+    {
+      "date": "2024-09-30",
+      "eps": 1.64,
+      "epsDiluted": 1.64,
+      "revenue": 94930000000,
+      "netIncome": 25000000000,
+      "freeCashFlow": 23000000000,
+      "operatingCashFlow": 26000000000,
+      "stockholdersEquity": 65000000000,
+      "bookValuePerShare": 4.25,
+      "priceToSalesRatio": 8.5,
+      "roe": 153.85
+    },
+    ...
+  ],
+  "lastUpdated": "2024-12-01T10:30:00"
+}
+```
+
+**フィールド説明**:
+
+| フィールド | 説明 | 出典 | 単位 |
+|-----------|------|------|------|
+| `date` | 四半期終了日 | - | YYYY-MM-DD |
+| `eps` | 1株当たり利益（基本） | Income Statement | USD |
+| `epsDiluted` | 1株当たり利益（希薄化後） | Income Statement | USD |
+| `revenue` | 売上高 | Income Statement | USD |
+| `netIncome` | 純利益 | Income Statement | USD |
+| `freeCashFlow` | フリーキャッシュフロー | Cash Flow Statement | USD |
+| `operatingCashFlow` | 営業キャッシュフロー | Cash Flow Statement | USD |
+| `stockholdersEquity` | 株主資本 | Balance Sheet | USD |
+| `bookValuePerShare` | 1株当たり純資産 (BPS) | Key Metrics | USD |
+| `priceToSalesRatio` | 株価売上高倍率 (PSR) | Key Metrics | 倍 |
+| `roe` | 自己資本利益率（年率換算） | 計算値 | % |
+
+**計算ロジック**:
+```python
+# ROE（年率換算）
+ROE = (netIncome / stockholdersEquity) × 4 × 100
+```
+四半期の純利益を年率換算（×4）し、株主資本で割って算出。
+
+**データ期間**: 
+- 開始: 2000年1月以降
+- 最大: 120四半期（約30年分）
+- 4つのステートメント全てに存在する四半期のみ含む
+
+**更新頻度**: 月次（毎月1日）
+
+**注意事項**:
+- 全ての財務データが揃っている四半期のみ含まれる
+- 企業の上場時期により利用可能なデータ期間は異なる
+- `null` 値は元データに存在しない場合に発生
+
 ---
 
-### 3. RS Scores (`scores/RS_scores/{category}/{year}.json`)
+### ４. RS Scores (`scores/RS_scores/{category}/{year}.json`)
 
 **説明**: 個別銘柄・セクター・業種ごとの Relative Strength スコア
 
@@ -185,7 +261,7 @@ r2://your-bucket/
 
 ---
 
-### 4. RRS Scores (`scores/RRS_scores/{category}/{year}.json`)
+### 5. RRS Scores (`scores/RRS_scores/{category}/{year}.json`)
 
 **説明**: Risk-adjusted Relative Strength スコア（ATR でリスク調整した RS）
 

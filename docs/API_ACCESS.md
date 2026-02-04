@@ -31,6 +31,7 @@ https://trading-dashboard-api.your-subdomain.workers.dev
 ```
 GET /api/stocks/core/{year}/{symbol}
 GET /api/stocks/indicators/{year}/{symbol}
+GET /api/stocks/fundamentals/quarterly/{year}/{symbol}
 GET /api/scores/RS_scores/{category}/{year}
 GET /api/scores/RRS_scores/{category}/{year}
 GET /api/metadata
@@ -118,6 +119,7 @@ aws s3 cp \
 ```
 stocks/daily/core/{year}/{symbol}.json          # 価格 + RS/RRS
 stocks/daily/indicators/standard/{year}/{symbol}.json  # テクニカル指標
+stocks/fundamentals/quarterly/{year}/{symbol}.json     # 四半期財務データ
 scores/RS_scores/individual/{year}.json         # Individual RS
 scores/RS_scores/sector/{year}.json             # Sector RS
 scores/RS_scores/industry/{year}.json           # Industry RS
@@ -126,7 +128,6 @@ scores/RRS_scores/sector/{year}.json            # Sector RRS
 scores/RRS_scores/industry/{year}.json          # Industry RRS
 metadata/last-updated.json                      # 最終更新情報
 ```
-
 ---
 
 ## 💡 使用例
