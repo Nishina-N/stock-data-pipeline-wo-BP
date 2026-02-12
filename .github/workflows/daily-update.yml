@@ -56,6 +56,10 @@ jobs:
       - name: 3. Calculate RS and RRS
         run: python scripts/daily/3_calculate_rs.py
         timeout-minutes: 40
+
+      - name: 3.5. Calculate BuyPressure
+        run: python scripts/daily/3.5_calculate_bp.py
+        timeout-minutes: 40
       
       - name: 4. Export to JSON (R2 format)
         run: python scripts/daily/4_export_to_json.py

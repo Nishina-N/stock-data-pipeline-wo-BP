@@ -26,13 +26,16 @@ from collections import defaultdict
 DATA_FOLDER = "data"
 TEMP_PRICE_JSON = os.path.join(DATA_FOLDER, "temp_prices.json")
 
-# 6つの入力ファイル
+# 9つの入力ファイル
 TEMP_RS_INDIVIDUAL_JSON = os.path.join(DATA_FOLDER, "temp_rs_individual.json")
 TEMP_RRS_INDIVIDUAL_JSON = os.path.join(DATA_FOLDER, "temp_rrs_individual.json")
 TEMP_RS_SECTOR_JSON = os.path.join(DATA_FOLDER, "temp_rs_sector.json")
 TEMP_RRS_SECTOR_JSON = os.path.join(DATA_FOLDER, "temp_rrs_sector.json")
 TEMP_RS_INDUSTRY_JSON = os.path.join(DATA_FOLDER, "temp_rs_industry.json")
 TEMP_RRS_INDUSTRY_JSON = os.path.join(DATA_FOLDER, "temp_rrs_industry.json")
+TEMP_BP_INDIVIDUAL_JSON = os.path.join(DATA_FOLDER, "temp_bp_individual.json")
+TEMP_BP_SECTOR_JSON = os.path.join(DATA_FOLDER, "temp_bp_sector.json")
+TEMP_BP_INDUSTRY_JSON = os.path.join(DATA_FOLDER, "temp_bp_industry.json")
 
 # R2アップロード用ディレクトリ
 R2_OUTPUT = os.path.join(DATA_FOLDER, "daily", "r2")
@@ -40,6 +43,7 @@ R2_STOCKS_CORE = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
 R2_STOCKS_INDICATORS = os.path.join(R2_OUTPUT, "stocks", "daily", "indicators", "standard")
 R2_SCORES_RS = os.path.join(R2_OUTPUT, "scores", "RS_scores")
 R2_SCORES_RRS = os.path.join(R2_OUTPUT, "scores", "RRS_scores")
+R2_SCORES_BP = os.path.join(R2_OUTPUT, "scores", "BuyPressure")
 R2_METADATA = os.path.join(R2_OUTPUT, "metadata")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -315,6 +319,25 @@ def main():
     if os.path.exists(TEMP_RRS_INDUSTRY_JSON):
         with open(TEMP_RRS_INDUSTRY_JSON, 'r') as f:
             rrs_industry_data = json.load(f)
+
+
+    # BuyPressure
+    bp_individual_data = []
+    bp_sector_data = []
+    bp_industry_data = []
+    
+    if os.path.exists(TEMP_BP_INDIVIDUAL_JSON):
+        with open(TEMP_BP_INDIVIDUAL_JSON, 'r') as f:
+            bp_individual_data = json.load(f)
+    
+    if os.path.exists(TEMP_BP_SECTOR_JSON):
+        with open(TEMP_BP_SECTOR_JSON, 'r') as f:
+            bp_sector_data = json.load(f)
+    
+    if os.path.exists(TEMP_BP_INDUSTRY_JSON):
+        with open(TEMP_BP_INDUSTRY_JSON, 'r') as f:
+            bp_industry_data = json.load(f)
+    
     
     logging.info(f"Loaded: {len(price_data['symbols'])} symbols")
     logging.info(f"Loaded: {len(rs_individual_data)} Individual RS records")
@@ -323,6 +346,9 @@ def main():
     logging.info(f"Loaded: {len(rrs_sector_data)} Sector RRS records")
     logging.info(f"Loaded: {len(rs_industry_data)} Industry RS records")
     logging.info(f"Loaded: {len(rrs_industry_data)} Industry RRS records")
+    logging.info(f"Loaded: {len(bp_individual_data)} Individual BP records")
+    logging.info(f"Loaded: {len(bp_sector_data)} Sector BP records")
+    logging.info(f"Loaded: {len(bp_industry_data)} Industry BP records")
     
     # RS/RRSを日付ベースの辞書に変換
     rs_rrs_dict = create_rs_rrs_dict(rs_individual_data, rrs_individual_data)
@@ -337,13 +363,16 @@ def main():
         logging.error("Failed to export indicator files")
         return False
     
-    # Score ファイル生成（6種類）
+    # Score ファイル生成（9種類）
     export_scores_by_year(rs_individual_data, os.path.join(R2_SCORES_RS, "individual"), "Individual RS")
     export_scores_by_year(rrs_individual_data, os.path.join(R2_SCORES_RRS, "individual"), "Individual RRS")
     export_scores_by_year(rs_sector_data, os.path.join(R2_SCORES_RS, "sector"), "Sector RS")
     export_scores_by_year(rrs_sector_data, os.path.join(R2_SCORES_RRS, "sector"), "Sector RRS")
     export_scores_by_year(rs_industry_data, os.path.join(R2_SCORES_RS, "industry"), "Industry RS")
     export_scores_by_year(rrs_industry_data, os.path.join(R2_SCORES_RRS, "industry"), "Industry RRS")
+    export_scores_by_year(bp_individual_data, os.path.join(R2_SCORES_BP, "individual"), "Individual BP")
+    export_scores_by_year(bp_sector_data, os.path.join(R2_SCORES_BP, "sector"), "Sector BP")
+    export_scores_by_year(bp_industry_data, os.path.join(R2_SCORES_BP, "industry"), "Industry BP")
     
     # メタデータ生成
     if not export_metadata(price_data, rs_individual_data):
