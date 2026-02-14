@@ -1,13 +1,7 @@
 """
 5_upload_to_r2.py
 
-R2へのアップロード（並列処理版）
-- stocks/daily/core/{year}/{symbol}.json
-- stocks/daily/indicators/standard/{year}/{symbol}.json
-- stocks/summary/{date}.json  # 追加
-- scores/RS_scores/{category}/{year}.json
-- scores/RRS_scores/{category}/{year}.json
-- metadata/last-updated.json
+R2へのアップロード（list_objects使用で高速化）
 """
 import os
 import boto3
@@ -18,23 +12,82 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 load_dotenv()
 
-# R2設定
 R2_ENDPOINT = os.getenv('R2_ENDPOINT')
 R2_ACCESS_KEY_ID = os.getenv('R2_ACCESS_KEY_ID')
 R2_SECRET_ACCESS_KEY = os.getenv('R2_SECRET_ACCESS_KEY')
 R2_BUCKET_NAME = os.getenv('R2_BUCKET_NAME')
 
-# ローカルディレクトリ
 DATA_FOLDER = "data"
 R2_OUTPUT = os.path.join(DATA_FOLDER, "daily", "r2")
 
-# 並列処理設定
 MAX_WORKERS = 10
+CURRENT_YEAR = datetime.now().year
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def upload_single_file_with_new_client(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
-    """各スレッドで新しいS3クライアントを作成してアップロード"""
+def create_s3_client():
+    return boto3.client(
+        's3',
+        endpoint_url=R2_ENDPOINT,
+        aws_access_key_id=R2_ACCESS_KEY_ID,
+        aws_secret_access_key=R2_SECRET_ACCESS_KEY,  # ← 修正
+        region_name='auto'
+    )
+
+def get_existing_files_in_r2(prefix):
+    """
+    R2の指定プレフィックス配下の全ファイルをlist_objectsで取得（高速）
+    """
+    s3_client = create_s3_client()
+    existing_keys = set()
+    
+    try:
+        paginator = s3_client.get_paginator('list_objects_v2')
+        pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix=prefix)
+        
+        for page in pages:
+            if 'Contents' in page:
+                for obj in page['Contents']:
+                    existing_keys.add(obj['Key'])
+        
+        logging.info(f"Found {len(existing_keys)} existing files in R2 under '{prefix}'")
+    except Exception as e:
+        logging.error(f"Error listing R2 objects: {e}")
+    finally:
+        s3_client.close()
+    
+    return existing_keys
+
+def extract_year_from_path(file_path):
+    parts = file_path.split('/')
+    for part in parts:
+        if part.isdigit() and len(part) == 4:
+            return int(part)
+    return None
+
+def extract_date_from_summary_path(file_path):
+    filename = os.path.basename(file_path)
+    date_str = filename.replace('.json', '')
+    try:
+        datetime.strptime(date_str, '%Y-%m-%d')
+        return date_str
+    except:
+        return None
+
+def get_latest_date_from_directory(local_dir):
+    dates = []
+    for file in os.listdir(local_dir):
+        if not file.endswith('.json'):
+            continue
+        date_str = file.replace('.json', '')
+        try:
+            datetime.strptime(date_str, '%Y-%m-%d')
+            dates.append(date_str)
+        except:
+            continue
+    return max(dates) if dates else None
+
+def upload_single_file(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
     s3_client = None
     try:
         s3_client = boto3.client(
@@ -53,31 +106,66 @@ def upload_single_file_with_new_client(endpoint, access_key, secret_key, bucket_
                 if attempt == max_retries - 1:
                     raise
                 logging.warning(f"Retry {attempt + 1}/{max_retries} for {key}: {e}")
-        
         return False
     finally:
-        if s3_client is not None:
+        if s3_client:
             s3_client.close()
 
-def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS):
-    """ディレクトリ内の全ファイルを並列アップロード"""
+def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_type='year', target_date=None):
     if not os.path.exists(local_dir):
         logging.warning(f"Directory not found: {local_dir}")
         return 0
     
-    # アップロード対象ファイルを収集
-    files_to_upload = []
-    
+    # 全ファイル収集
+    all_files = []
     for root, dirs, files in os.walk(local_dir):
         for file in files:
             if not file.endswith('.json'):
                 continue
-            
             local_path = os.path.join(root, file)
             relative_path = os.path.relpath(local_path, R2_OUTPUT)
             s3_key = relative_path.replace('\\', '/')
+            all_files.append((local_path, s3_key))
+    
+    if not all_files:
+        logging.info(f"No files in {local_dir}")
+        return 0
+    
+    # フィルタリング
+    files_to_upload = []
+    
+    if filter_type == 'always':
+        files_to_upload = all_files
+    
+    elif filter_type == 'date':
+        files_to_upload = [(local_path, s3_key) for local_path, s3_key in all_files 
+                          if extract_date_from_summary_path(s3_key) == target_date]
+    
+    elif filter_type == 'year':
+        current_year_files = []
+        past_year_files = []
+        
+        for local_path, s3_key in all_files:
+            year = extract_year_from_path(s3_key)
+            if year is None or year == CURRENT_YEAR:
+                current_year_files.append((local_path, s3_key))
+            else:
+                past_year_files.append((local_path, s3_key))
+        
+        # 過去年度ファイルの存在チェック（list_objectsで一括取得）
+        if past_year_files:
+            logging.info(f"Checking {len(past_year_files)} past year files in R2...")
+            existing_keys = get_existing_files_in_r2(s3_prefix)
             
-            files_to_upload.append((local_path, s3_key))
+            missing_count = 0
+            for local_path, s3_key in past_year_files:
+                if s3_key not in existing_keys:
+                    current_year_files.append((local_path, s3_key))
+                    missing_count += 1
+            
+            logging.info(f"Found {len(past_year_files) - missing_count} existing, {missing_count} missing")
+        
+        files_to_upload = current_year_files
     
     if not files_to_upload:
         logging.info(f"No files to upload in {local_dir}")
@@ -91,7 +179,7 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS):
     with ThreadPoolExecutor(max_workers=workers) as executor:
         futures = {
             executor.submit(
-                upload_single_file_with_new_client,
+                upload_single_file,
                 R2_ENDPOINT,
                 R2_ACCESS_KEY_ID,
                 R2_SECRET_ACCESS_KEY,
@@ -105,8 +193,7 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS):
         for future in as_completed(futures):
             s3_key = futures[future]
             try:
-                result = future.result()
-                if result:
+                if future.result():
                     success_count += 1
                     if success_count % 100 == 0:
                         logging.info(f"Progress: {success_count}/{len(files_to_upload)}")
@@ -121,9 +208,9 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS):
     return success_count
 
 def main():
-    """メイン処理"""
     logging.info("="*60)
-    logging.info("UPLOAD TO R2 (PARALLEL)")
+    logging.info("UPLOAD TO R2 (PARALLEL + LIST-BASED FILTERING)")
+    logging.info(f"Current Year: {CURRENT_YEAR} (force overwrite)")
     logging.info("="*60)
     
     if not all([R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME]):
@@ -132,30 +219,30 @@ def main():
     
     total_uploaded = 0
     
-    # 1. stocks/daily/core
-    logging.info("\n[1/6] Uploading stocks/daily/core...")
+    logging.info("\n[1/5] Uploading stocks/daily/core...")
     core_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
-    total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core")
+    total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year')
     
-    # 2. stocks/daily/indicators
-    logging.info("\n[2/6] Uploading stocks/daily/indicators...")
+    logging.info("\n[2/5] Uploading stocks/daily/indicators...")
     indicators_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "indicators")
-    total_uploaded += upload_directory_parallel(indicators_dir, "stocks/daily/indicators")
+    total_uploaded += upload_directory_parallel(indicators_dir, "stocks/daily/indicators", filter_type='year')
     
-    # 3. stocks/summary (新規追加)
-    logging.info("\n[3/6] Uploading stocks/summary...")
+    logging.info("\n[3/5] Uploading stocks/summary...")
     summary_dir = os.path.join(R2_OUTPUT, "stocks", "summary")
-    total_uploaded += upload_directory_parallel(summary_dir, "stocks/summary")
+    latest_date = get_latest_date_from_directory(summary_dir)
+    if latest_date:
+        logging.info(f"Latest date: {latest_date}")
+        total_uploaded += upload_directory_parallel(summary_dir, "stocks/summary", filter_type='date', target_date=latest_date)
+    else:
+        logging.warning("No valid summary files found")
     
-    # 4. scores
-    logging.info("\n[4/6] Uploading scores...")
+    logging.info("\n[4/5] Uploading scores...")
     scores_dir = os.path.join(R2_OUTPUT, "scores")
-    total_uploaded += upload_directory_parallel(scores_dir, "scores")
+    total_uploaded += upload_directory_parallel(scores_dir, "scores", filter_type='year')
     
-    # 5. metadata
-    logging.info("\n[5/6] Uploading metadata...")
+    logging.info("\n[5/5] Uploading metadata...")
     metadata_dir = os.path.join(R2_OUTPUT, "metadata")
-    total_uploaded += upload_directory_parallel(metadata_dir, "metadata")
+    total_uploaded += upload_directory_parallel(metadata_dir, "metadata", filter_type='always')
     
     logging.info("="*60)
     logging.info(f"✅ Upload completed: {total_uploaded} files total")

@@ -1,10 +1,15 @@
 """
 1_fetch_historical_prices.py
 
-yfinanceで過去最大期間の価格データを取得
+yfinanceで過去価格データを取得（開始日指定可能）
 出力: data/maintenance/temp_prices.pkl
+
+使い方:
+  python 1_fetch_historical_prices.py              # maxデータ取得
+  python 1_fetch_historical_prices.py 2020-01-01  # 2020年以降のデータ取得
 """
 import os
+import sys
 import pandas as pd
 import yfinance as yf
 import logging
@@ -19,17 +24,22 @@ OUTPUT_PKL = os.path.join(MAINTENANCE_FOLDER, "temp_prices.pkl")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def fetch_historical_prices_max(symbols, end_date, chunk_size=10, max_retries=3):
+def fetch_historical_prices(symbols, start_date=None, end_date=None, chunk_size=10, max_retries=3):
     """
-    yfinanceで取得可能な最大期間の価格データを取得（安定版）
+    yfinanceで価格データを取得
     
     Args:
         symbols: 銘柄リスト
-        end_date: 終了日（例: "2024-12-31"）
-        chunk_size: 一度に取得する銘柄数（デフォルト: 10）
-        max_retries: リトライ回数（デフォルト: 3）
+        start_date: 開始日（例: "2020-01-01"）None の場合は max
+        end_date: 終了日（例: "2025-12-31"）
+        chunk_size: 一度に取得する銘柄数
+        max_retries: リトライ回数
     """
-    logging.info(f"Fetching price data: MAX period to {end_date}")
+    if start_date:
+        logging.info(f"Fetching price data: {start_date} to {end_date or 'today'}")
+    else:
+        logging.info(f"Fetching price data: MAX period to {end_date or 'today'}")
+    
     logging.info(f"Target symbols: {len(symbols)}")
     logging.info(f"Chunk size: {chunk_size}")
     
@@ -48,13 +58,16 @@ def fetch_historical_prices_max(symbols, end_date, chunk_size=10, max_retries=3)
         # リトライ機構
         for attempt in range(max_retries):
             try:
-                # 個別銘柄で取得（エラー回避）
                 chunk_data = {}
                 
                 for symbol in chunk:
                     try:
                         ticker = yf.Ticker(symbol)
-                        df = ticker.history(period="max", end=end_date)
+                        
+                        if start_date:
+                            df = ticker.history(start=start_date, end=end_date)
+                        else:
+                            df = ticker.history(period="max", end=end_date)
                         
                         if not df.empty:
                             chunk_data[symbol] = df
@@ -68,100 +81,82 @@ def fetch_historical_prices_max(symbols, end_date, chunk_size=10, max_retries=3)
                 
                 # MultiIndex DataFrameに変換
                 if chunk_data:
-                    # 各銘柄のDataFrameを結合
                     combined = pd.concat(chunk_data, axis=1)
                     all_data.append(combined)
                     logging.info(f"  ✓ Chunk {chunk_num}: {len(chunk_data)} symbols succeeded")
                 else:
                     logging.warning(f"  ⚠ Chunk {chunk_num}: No data returned")
                 
-                break  # 成功したらリトライ不要
+                break
                 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    logging.warning(f"  Chunk {chunk_num} attempt {attempt+1} failed, retrying...")
+                    logging.warning(f"  Chunk {chunk_num} attempt {attempt + 1} failed: {e}")
                     time.sleep(2)
                 else:
-                    logging.error(f"  ✗ Chunk {chunk_num} failed after {max_retries} attempts: {e}")
+                    logging.error(f"  Chunk {chunk_num} failed after {max_retries} attempts")
+        
+        time.sleep(0.5)
     
-    if len(all_data) == 0:
-        raise ValueError("No data downloaded from any chunk")
-    
-    # 全チャンクを結合
-    logging.info("Combining all chunks...")
-    df = pd.concat(all_data, axis=1)
-    
-    logging.info(f"\n{'='*60}")
-    logging.info(f"✅ Download completed")
-    logging.info(f"{'='*60}")
-    logging.info(f"Total symbols requested: {len(symbols)}")
-    logging.info(f"Successful: {len(successful_symbols)}")
-    logging.info(f"Failed: {len(failed_symbols)}")
-    logging.info(f"Success rate: {len(successful_symbols)/len(symbols)*100:.1f}%")
-    logging.info(f"Date range: {df.index.min()} to {df.index.max()}")
-    logging.info(f"{'='*60}\n")
-    
-    return df
+    # 全データ結合
+    if all_data:
+        final_df = pd.concat(all_data, axis=1)
+        logging.info(f"✅ Successfully fetched {len(successful_symbols)} symbols")
+        if failed_symbols:
+            logging.warning(f"⚠️  Failed to fetch {len(failed_symbols)} symbols")
+        return final_df
+    else:
+        logging.error("❌ No data fetched")
+        return None
 
 def main():
-    """メイン処理"""
-    import argparse
-    
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--end', type=str, default='2024-12-31',
-                       help='End date (YYYY-MM-DD)')
-    args = parser.parse_args()
-    
     logging.info("="*60)
-    logging.info("STEP 1: FETCH HISTORICAL PRICES")
+    logging.info("FETCH HISTORICAL PRICES")
     logging.info("="*60)
     
-    # 出力ディレクトリ作成
-    os.makedirs(MAINTENANCE_FOLDER, exist_ok=True)
+    # コマンドライン引数から開始日を取得
+    start_date = None
+    if len(sys.argv) > 1:
+        start_date = sys.argv[1]
+        logging.info(f"Start date specified: {start_date}")
     
     # 銘柄リスト読み込み
     if not os.path.exists(TARGET_STOCKS_CSV):
         logging.error(f"Target stocks file not found: {TARGET_STOCKS_CSV}")
         return False
     
-    df_stocks = pd.read_csv(TARGET_STOCKS_CSV)
+    target_stocks = pd.read_csv(TARGET_STOCKS_CSV)
+    symbols = target_stocks['Symbol'].tolist()
     
-    # シンボルリストを取得（クリーニング）
-    symbols = []
+    # S&P500インデックス追加
+    symbols.append('^GSPC')
     
-    for _, row in df_stocks.iterrows():
-        symbol = row['Symbol']
-        
-        # 無効なシンボルをスキップ
-        if not isinstance(symbol, str) or not symbol.strip():
-            continue
-        
-        symbol = symbol.strip()
-        symbols.append(symbol)
+    logging.info(f"Total symbols to fetch: {len(symbols)}")
     
-    # S&P500を追加（RRS計算用）
-    if '^GSPC' not in symbols:
-        symbols.append('^GSPC')
+    # データ取得
+    df = fetch_historical_prices(symbols, start_date=start_date)
     
-    logging.info(f"Target symbols: {len(symbols)}")
+    if df is None or df.empty:
+        logging.error("Failed to fetch price data")
+        return False
     
-    # 価格データ取得
-    df = fetch_historical_prices_max(symbols, args.end)
+    # 保存
+    os.makedirs(MAINTENANCE_FOLDER, exist_ok=True)
     
-    # Pickle形式で保存
-    logging.info(f"Saving to {OUTPUT_PKL}...")
     with open(OUTPUT_PKL, 'wb') as f:
         pickle.dump(df, f)
     
+    logging.info(f"Saved to: {OUTPUT_PKL}")
+    logging.info(f"Data shape: {df.shape}")
+    logging.info(f"Date range: {df.index[0]} to {df.index[-1]}")
+    
     logging.info("="*60)
-    logging.info("✅ STEP 1 COMPLETED!")
-    logging.info(f"Output: {OUTPUT_PKL}")
+    logging.info("✅ Historical price data fetch complete!")
     logging.info("="*60)
     
     return True
 
 if __name__ == "__main__":
-    import sys
     if main():
         sys.exit(0)
     else:

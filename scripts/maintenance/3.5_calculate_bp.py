@@ -1,28 +1,8 @@
 """
 3.5_calculate_bp.py
 
-BuyPressure計算（生値 + ランキングのみ、パーセンタイル計算なし）
-入力: data/maintenance/temp_prices_with_indicators.pkl
-      data/target_stocks_latest.csv
-
-出力: 
-【Individual】
-  data/maintenance/temp_bp_raw.pkl (BP生値)
-
-【Sector】
-  data/maintenance/temp_sector_bp_raw.pkl (セクターBP生値)
-
-【Industry】
-  data/maintenance/temp_industry_bp_raw.pkl (業種BP生値)
-
-計算方法:
-1. ATR (14日) を使ったボラティリティフィルター
-2. ATR × 0.3 以上の価格変動がある日のみ有効
-3. 値上がり日: up_volume = close × volume
-4. 値下がり日: down_volume = close × volume
-5. 過去20日間のup/downを合計
-6. Buy Pressure = up_vol_sum / (up_vol_sum + down_vol_sum)
-7. Sector/Industry: 時価総額加重平均
+BuyPressure計算（RS/RRSと同じ形式で出力）
+出力形式: 日付ごとの辞書リスト
 """
 import os
 import pandas as pd
@@ -37,21 +17,14 @@ TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
 
 INPUT_PKL = os.path.join(MAINTENANCE_FOLDER, "temp_prices_with_indicators.pkl")
 
-# Individual
 OUTPUT_BP_RAW = os.path.join(MAINTENANCE_FOLDER, "temp_bp_raw.pkl")
-
-# Sector
 OUTPUT_SECTOR_BP_RAW = os.path.join(MAINTENANCE_FOLDER, "temp_sector_bp_raw.pkl")
-
-# Industry
 OUTPUT_INDUSTRY_BP_RAW = os.path.join(MAINTENANCE_FOLDER, "temp_industry_bp_raw.pkl")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def calculate_atr(df, period=14):
-    """
-    ATR (Average True Range) を計算
-    """
+    """ATR計算"""
     high = df['High']
     low = df['Low']
     close_prev = df['Close'].shift(1)
@@ -66,46 +39,27 @@ def calculate_atr(df, period=14):
     return atr
 
 def calculate_individual_bp(df):
-    """
-    Individual BuyPressure計算（生値のみ）
-    
-    ATR × 0.3 以上の価格変動がある日のみ有効として、
-    過去20日間のup/down volume を集計
-    
-    Returns:
-        pd.DataFrame: bp_raw (各銘柄のBuyPressure時系列)
-    """
-    logging.info("Calculating Individual BuyPressure scores...")
+    """Individual BuyPressure計算"""
+    logging.info("Calculating Individual BuyPressure...")
     
     symbols = df.columns.levels[0] if isinstance(df.columns, pd.MultiIndex) else [df.columns[0]]
-    
     bp_list = []
     
     for symbol in symbols:
         try:
             symbol_df = df[symbol].copy()
             
-            # ATR計算
             atr = calculate_atr(symbol_df, period=14)
-            
-            # 価格変動 (close - close.shift(1))
             price_change = symbol_df['Close'].diff()
-            
-            # ATR × 0.3 以上の変動がある日のみ有効
             significant_move = abs(price_change) >= (atr * 0.3)
-            
-            # ドル出来高
             dollar_volume = symbol_df['Close'] * symbol_df['Volume']
             
-            # 値上がり/値下がり判定
             up_volume = np.where((price_change > 0) & significant_move, dollar_volume, 0)
             down_volume = np.where((price_change < 0) & significant_move, dollar_volume, 0)
             
-            # 過去20日間の累積
             up_vol_sum = pd.Series(up_volume, index=symbol_df.index).rolling(window=20).sum()
             down_vol_sum = pd.Series(down_volume, index=symbol_df.index).rolling(window=20).sum()
             
-            # Buy Pressure計算
             total_vol = up_vol_sum + down_vol_sum
             bp = np.where(total_vol > 0, up_vol_sum / total_vol, np.nan)
             
@@ -116,133 +70,276 @@ def calculate_individual_bp(df):
             logging.warning(f"Failed to calculate BP for {symbol}: {e}")
             continue
     
-    # 一度にまとめて結合
     bp_raw = pd.concat(bp_list, axis=1)
     
-    # 統計情報
     valid_count = bp_raw.notna().sum(axis=1).iloc[-1] if len(bp_raw) > 0 else 0
     logging.info(f"Calculated BuyPressure for {len(symbols)} symbols")
     logging.info(f"Latest date: {valid_count}/{len(symbols)} symbols have valid BP scores")
     
     return bp_raw
 
-def calculate_sector_industry_bp(df, target_stocks_df, bp_raw, group_by='sector'):
-    """
-    Sector/Industry レベルのBuyPressure計算（時価総額加重平均）
+def calculate_sector_bp(df, symbols_info):
+    """Sector BuyPressure計算（RS/RRSと同じ形式）"""
+    logging.info("Calculating Sector BuyPressure...")
     
-    Args:
-        df: 価格データ
-        target_stocks_df: 銘柄メタデータ
-        bp_raw: Individual BuyPressure
-        group_by: 'sector' or 'industry'
+    symbols = df.columns.levels[0] if isinstance(df.columns, pd.MultiIndex) else [df.columns[0]]
     
-    Returns:
-        pd.DataFrame: グループ別BuyPressure時系列
-    """
-    field_name = 'Sector' if group_by == 'sector' else 'Industry'
-    logging.info(f"Calculating {field_name} BuyPressure scores...")
-    
-    # 銘柄→グループのマッピング
-    symbol_to_group = dict(zip(target_stocks_df['Symbol'], target_stocks_df[field_name]))
-    
-    # 時価総額の取得（最新の終値 × 発行済株式数の代理として Volume を使用）
-    # ※ 本来は market cap データが必要ですが、簡易的に最新の close * volume を使用
-    market_caps = {}
-    for symbol in bp_raw.columns:
-        try:
-            latest_close = df[symbol]['Close'].iloc[-1]
-            latest_volume = df[symbol]['Volume'].iloc[-1]
-            market_caps[symbol] = latest_close * latest_volume
-        except:
-            market_caps[symbol] = 1.0  # デフォルト
-    
-    # グループごとに集約
-    groups = target_stocks_df[field_name].unique()
-    group_bp_list = []
-    
-    for group in groups:
-        symbols_in_group = target_stocks_df[target_stocks_df[field_name] == group]['Symbol'].tolist()
-        symbols_in_group = [s for s in symbols_in_group if s in bp_raw.columns]
-        
-        if not symbols_in_group:
+    # セクターグループ化
+    sector_groups = defaultdict(list)
+    for symbol in symbols:
+        if symbol == '^GSPC':
             continue
-        
-        # 各銘柄のウェイト
-        weights = {s: market_caps.get(s, 1.0) for s in symbols_in_group}
-        total_weight = sum(weights.values())
-        
-        # 時価総額加重平均
-        weighted_bp = pd.Series(0.0, index=bp_raw.index)
-        
-        for symbol in symbols_in_group:
-            weight = weights[symbol] / total_weight
-            weighted_bp += bp_raw[symbol].fillna(0) * weight
-        
-        # NaNを適切に処理（全てNaNの場合はNaN）
-        all_nan = bp_raw[symbols_in_group].isna().all(axis=1)
-        weighted_bp = weighted_bp.where(~all_nan, np.nan)
-        weighted_bp.name = group
-        
-        group_bp_list.append(weighted_bp)
+        info = symbols_info.get(symbol, {})
+        sector = info.get('sector', 'Unknown')
+        sector_groups[sector].append(symbol)
     
-    # 結合
-    group_bp = pd.concat(group_bp_list, axis=1)
+    # 配列化
+    logging.info("Pre-calculating BP arrays...")
+    bp_arr = {}
+    close_arr = {}
+    volume_arr = {}
     
-    logging.info(f"Calculated {field_name} BuyPressure for {len(groups)} {field_name.lower()}s")
+    for symbol in symbols:
+        if symbol == '^GSPC':
+            continue
+        try:
+            # BP計算
+            symbol_df = df[symbol].copy()
+            atr = calculate_atr(symbol_df, period=14)
+            price_change = symbol_df['Close'].diff()
+            significant_move = abs(price_change) >= (atr * 0.3)
+            dollar_volume = symbol_df['Close'] * symbol_df['Volume']
+            
+            up_volume = np.where((price_change > 0) & significant_move, dollar_volume, 0)
+            down_volume = np.where((price_change < 0) & significant_move, dollar_volume, 0)
+            
+            up_vol_sum = pd.Series(up_volume, index=symbol_df.index).rolling(window=20).sum()
+            down_vol_sum = pd.Series(down_volume, index=symbol_df.index).rolling(window=20).sum()
+            
+            total_vol = up_vol_sum + down_vol_sum
+            bp = np.where(total_vol > 0, up_vol_sum / total_vol, np.nan)
+            
+            bp_arr[symbol] = bp
+            close_arr[symbol] = symbol_df['Close'].values
+            volume_arr[symbol] = symbol_df['Volume'].values
+        except:
+            pass
     
-    return group_bp
+    dates = df.index.values
+    
+    # 日付ごとにセクターBP計算
+    logging.info("Calculating sector-level BuyPressure...")
+    sector_bp_raw_list = []
+    
+    total_dates = len(dates)
+    processed_count = 0
+    
+    for date_idx in range(total_dates):
+        processed_count += 1
+        date = dates[date_idx]
+        
+        sector_bp_scores = {}
+        
+        for sector, sector_symbols in sector_groups.items():
+            sector_bps = []
+            sector_closes = []
+            sector_volumes = []
+            
+            for symbol in sector_symbols:
+                try:
+                    bp_val = bp_arr[symbol][date_idx]
+                    close_val = close_arr[symbol][date_idx]
+                    volume_val = volume_arr[symbol][date_idx]
+                    
+                    if pd.notna(bp_val) and pd.notna(close_val) and pd.notna(volume_val):
+                        sector_bps.append(bp_val)
+                        sector_closes.append(close_val)
+                        sector_volumes.append(volume_val)
+                except:
+                    pass
+            
+            if len(sector_bps) > 0:
+                bps_np = np.array(sector_bps)
+                closes_np = np.array(sector_closes)
+                volumes_np = np.array(sector_volumes)
+                
+                weights = closes_np * volumes_np
+                total_weight = weights.sum()
+                
+                if total_weight > 0:
+                    weighted_bp = (weights * bps_np).sum() / total_weight
+                    
+                    sector_bp_scores[sector] = {
+                        'bp_raw': weighted_bp,
+                        'stock_count': len(sector_bps)
+                    }
+        
+        if sector_bp_scores:
+            sector_bp_raw_list.append((date, sector_bp_scores))
+        
+        if processed_count % 1000 == 0:
+            logging.info(f"  Progress: {processed_count}/{total_dates} dates")
+    
+    logging.info(f"Calculated Sector BP for {len(sector_bp_raw_list)} dates")
+    return sector_bp_raw_list
+
+def calculate_industry_bp(df, symbols_info):
+    """Industry BuyPressure計算（RS/RRSと同じ形式）"""
+    logging.info("Calculating Industry BuyPressure...")
+    
+    symbols = df.columns.levels[0] if isinstance(df.columns, pd.MultiIndex) else [df.columns[0]]
+    
+    # 業種グループ化
+    industry_groups = defaultdict(list)
+    industry_to_sector = {}
+    
+    for symbol in symbols:
+        if symbol == '^GSPC':
+            continue
+        info = symbols_info.get(symbol, {})
+        industry = info.get('industry', 'Unknown')
+        sector = info.get('sector', 'Unknown')
+        industry_groups[industry].append(symbol)
+        if industry not in industry_to_sector:
+            industry_to_sector[industry] = sector
+    
+    # 配列化
+    logging.info("Pre-calculating BP arrays...")
+    bp_arr = {}
+    close_arr = {}
+    volume_arr = {}
+    
+    for symbol in symbols:
+        if symbol == '^GSPC':
+            continue
+        try:
+            symbol_df = df[symbol].copy()
+            atr = calculate_atr(symbol_df, period=14)
+            price_change = symbol_df['Close'].diff()
+            significant_move = abs(price_change) >= (atr * 0.3)
+            dollar_volume = symbol_df['Close'] * symbol_df['Volume']
+            
+            up_volume = np.where((price_change > 0) & significant_move, dollar_volume, 0)
+            down_volume = np.where((price_change < 0) & significant_move, dollar_volume, 0)
+            
+            up_vol_sum = pd.Series(up_volume, index=symbol_df.index).rolling(window=20).sum()
+            down_vol_sum = pd.Series(down_volume, index=symbol_df.index).rolling(window=20).sum()
+            
+            total_vol = up_vol_sum + down_vol_sum
+            bp = np.where(total_vol > 0, up_vol_sum / total_vol, np.nan)
+            
+            bp_arr[symbol] = bp
+            close_arr[symbol] = symbol_df['Close'].values
+            volume_arr[symbol] = symbol_df['Volume'].values
+        except:
+            pass
+    
+    dates = df.index.values
+    
+    # 日付ごとに業種BP計算
+    logging.info("Calculating industry-level BuyPressure...")
+    industry_bp_raw_list = []
+    
+    total_dates = len(dates)
+    processed_count = 0
+    
+    for date_idx in range(total_dates):
+        processed_count += 1
+        date = dates[date_idx]
+        
+        industry_bp_scores = {}
+        
+        for industry, industry_symbols in industry_groups.items():
+            sector = industry_to_sector.get(industry, 'Unknown')
+            
+            industry_bps = []
+            industry_closes = []
+            industry_volumes = []
+            
+            for symbol in industry_symbols:
+                try:
+                    bp_val = bp_arr[symbol][date_idx]
+                    close_val = close_arr[symbol][date_idx]
+                    volume_val = volume_arr[symbol][date_idx]
+                    
+                    if pd.notna(bp_val) and pd.notna(close_val) and pd.notna(volume_val):
+                        industry_bps.append(bp_val)
+                        industry_closes.append(close_val)
+                        industry_volumes.append(volume_val)
+                except:
+                    pass
+            
+            if len(industry_bps) > 0:
+                bps_np = np.array(industry_bps)
+                closes_np = np.array(industry_closes)
+                volumes_np = np.array(industry_volumes)
+                
+                weights = closes_np * volumes_np
+                total_weight = weights.sum()
+                
+                if total_weight > 0:
+                    weighted_bp = (weights * bps_np).sum() / total_weight
+                    
+                    industry_bp_scores[industry] = {
+                        'bp_raw': weighted_bp,
+                        'sector': sector,
+                        'stock_count': len(industry_bps)
+                    }
+        
+        if industry_bp_scores:
+            industry_bp_raw_list.append((date, industry_bp_scores))
+        
+        if processed_count % 1000 == 0:
+            logging.info(f"  Progress: {processed_count}/{total_dates} dates")
+    
+    logging.info(f"Calculated Industry BP for {len(industry_bp_raw_list)} dates")
+    return industry_bp_raw_list
 
 def main():
     logging.info("=" * 60)
-    logging.info("Starting BuyPressure Calculation (Maintenance Mode)")
+    logging.info("Starting BuyPressure Calculation")
     logging.info("=" * 60)
     
-    # 1. データ読み込み
-    logging.info(f"Loading price data from {INPUT_PKL}...")
+    # データ読み込み
     with open(INPUT_PKL, 'rb') as f:
         df = pickle.load(f)
     
-    logging.info(f"Loading target stocks from {TARGET_STOCKS_CSV}...")
-    target_stocks_df = pd.read_csv(TARGET_STOCKS_CSV)
+    df_stocks = pd.read_csv(TARGET_STOCKS_CSV)
     
-    # 2. Individual BuyPressure計算
+    symbols_info = {}
+    for _, row in df_stocks.iterrows():
+        symbol = row['Symbol']
+        if not isinstance(symbol, str) or not symbol.strip():
+            continue
+        symbol = symbol.strip()
+        symbols_info[symbol] = {
+            'name': row.get('Company Name', symbol) if pd.notna(row.get('Company Name')) else symbol,
+            'sector': row.get('Sector', 'N/A') if pd.notna(row.get('Sector')) else 'N/A',
+            'industry': row.get('Industry', 'N/A') if pd.notna(row.get('Industry')) else 'N/A'
+        }
+    
+    # Individual BP
     bp_raw = calculate_individual_bp(df)
     
-    # 3. Sector BuyPressure計算
-    sector_bp_raw = calculate_sector_industry_bp(df, target_stocks_df, bp_raw, group_by='sector')
+    # Sector BP
+    sector_bp_raw_list = calculate_sector_bp(df, symbols_info)
     
-    # 4. Industry BuyPressure計算
-    industry_bp_raw = calculate_sector_industry_bp(df, target_stocks_df, bp_raw, group_by='industry')
+    # Industry BP
+    industry_bp_raw_list = calculate_industry_bp(df, symbols_info)
     
-    # 5. 保存
-    logging.info(f"Saving Individual BP to {OUTPUT_BP_RAW}...")
+    # 保存
     with open(OUTPUT_BP_RAW, 'wb') as f:
         pickle.dump(bp_raw, f)
     
-    logging.info(f"Saving Sector BP to {OUTPUT_SECTOR_BP_RAW}...")
     with open(OUTPUT_SECTOR_BP_RAW, 'wb') as f:
-        pickle.dump(sector_bp_raw, f)
+        pickle.dump(sector_bp_raw_list, f)
     
-    logging.info(f"Saving Industry BP to {OUTPUT_INDUSTRY_BP_RAW}...")
     with open(OUTPUT_INDUSTRY_BP_RAW, 'wb') as f:
-        pickle.dump(industry_bp_raw, f)
+        pickle.dump(industry_bp_raw_list, f)
     
     logging.info("=" * 60)
-    logging.info("BuyPressure Calculation Complete!")
+    logging.info("✅ BuyPressure Calculation Complete!")
     logging.info("=" * 60)
-    
-    # サマリー表示
-    print("\n📊 Summary:")
-    print(f"  Individual BP: {bp_raw.shape}")
-    print(f"  Sector BP: {sector_bp_raw.shape}")
-    print(f"  Industry BP: {industry_bp_raw.shape}")
-    
-    # 最新日のサンプル
-    if len(bp_raw) > 0:
-        latest_date = bp_raw.index[-1]
-        print(f"\n📅 Latest date: {latest_date}")
-        print(f"  Sample Individual BP (top 5):")
-        print(bp_raw.loc[latest_date].dropna().sort_values(ascending=False).head())
 
 if __name__ == "__main__":
     main()
