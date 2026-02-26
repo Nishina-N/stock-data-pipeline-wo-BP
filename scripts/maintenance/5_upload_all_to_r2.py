@@ -204,26 +204,6 @@ def main():
         "scores/RRS_scores/industry"
     )
     
-    # Individual BP
-    logging.info("\n[7/9] Uploading Individual BuyPressure...")
-    total_uploaded += upload_directory(
-        os.path.join(R2_OUTPUT, "scores", "BuyPressure", "individual"),
-        "scores/BuyPressure/individual"
-    )
-    
-    # Sector BP
-    logging.info("\n[8/9] Uploading Sector BuyPressure...")
-    total_uploaded += upload_directory(
-        os.path.join(R2_OUTPUT, "scores", "BuyPressure", "sector"),
-        "scores/BuyPressure/sector"
-    )
-    
-    # Industry BP
-    logging.info("\n[9/9] Uploading Industry BuyPressure...")
-    total_uploaded += upload_directory(
-        os.path.join(R2_OUTPUT, "scores", "BuyPressure", "industry"),
-        "scores/BuyPressure/industry"
-    )
     
     logging.info("="*60)
     logging.info(f"✅ Total uploaded: {total_uploaded} files")

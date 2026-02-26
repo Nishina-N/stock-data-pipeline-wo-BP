@@ -258,6 +258,10 @@ def main():
     
     symbols = load_target_stocks()
     
+    # Core ETFs typically don't have standard fundamentals, so exclude them
+    CORE_ETFS = ['DIA', 'SPY', 'SOXX', 'IWM', 'QQQ', '^GSPC']
+    symbols = [s for s in symbols if s not in CORE_ETFS]
+    
     if not symbols:
         logging.error("No symbols found")
         return False

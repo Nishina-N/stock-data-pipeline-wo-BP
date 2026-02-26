@@ -24,6 +24,8 @@ DATA_FOLDER = "data"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+CORE_ETFS = ['DIA', 'SPY', 'SOXX', 'IWM', 'QQQ', '^GSPC']
+
 def get_us_stocks():
     """NYSE・NASDAQ銘柄一覧を取得"""
     url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={API_KEY}"
@@ -143,7 +145,7 @@ def filter_stocks():
     logger.info(f"取得完了: {len(stocks)}銘柄")
     
     logger.info("事前フィルタリング中...")
-    pre_filtered = [s for s in stocks if is_common_stock_strict(s.get('symbol', ''), s.get('name', ''))]
+    pre_filtered = [s for s in stocks if s.get('symbol', '') in CORE_ETFS or is_common_stock_strict(s.get('symbol', ''), s.get('name', ''))]
     logger.info(f"フィルタリング後: {len(pre_filtered)}銘柄")
     
     logger.info("株価を一括取得中...")
@@ -175,7 +177,8 @@ def filter_stocks():
         symbol = stock['symbol']
         if symbol in profiles and symbol in prices:
             profile = profiles[symbol]
-            if not is_old_ipo(profile.get('ipoDate')):
+            # Core ETFs bypass the IPO date check
+            if symbol not in CORE_ETFS and not is_old_ipo(profile.get('ipoDate')):
                 continue
             
             filtered_stocks.append({

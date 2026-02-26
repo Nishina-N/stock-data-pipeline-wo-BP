@@ -114,15 +114,6 @@ def main():
     logging.info("\n[6/9] Deleting RRS_scores/industry...")
     total_deleted += delete_files_by_year("scores/RRS_scores/industry", YEARS_TO_DELETE)
     
-    # BuyPressure (追加)
-    logging.info("\n[7/9] Deleting BuyPressure/individual...")
-    total_deleted += delete_files_by_year("scores/BuyPressure/individual", YEARS_TO_DELETE)
-    
-    logging.info("\n[8/9] Deleting BuyPressure/sector...")
-    total_deleted += delete_files_by_year("scores/BuyPressure/sector", YEARS_TO_DELETE)
-    
-    logging.info("\n[9/9] Deleting BuyPressure/industry...")
-    total_deleted += delete_files_by_year("scores/BuyPressure/industry", YEARS_TO_DELETE)
     
     logging.info("="*60)
     logging.info(f"✅ Total deleted: {total_deleted} files")
