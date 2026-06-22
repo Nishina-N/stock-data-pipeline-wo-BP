@@ -65,28 +65,6 @@ def extract_year_from_path(file_path):
             return int(part)
     return None
 
-def extract_date_from_summary_path(file_path):
-    filename = os.path.basename(file_path)
-    date_str = filename.replace('.json', '')
-    try:
-        datetime.strptime(date_str, '%Y-%m-%d')
-        return date_str
-    except:
-        return None
-
-def get_latest_date_from_directory(local_dir):
-    dates = []
-    for file in os.listdir(local_dir):
-        if not file.endswith('.json'):
-            continue
-        date_str = file.replace('.json', '')
-        try:
-            datetime.strptime(date_str, '%Y-%m-%d')
-            dates.append(date_str)
-        except:
-            continue
-    return max(dates) if dates else None
-
 def upload_single_file(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
     s3_client = None
     try:
@@ -136,11 +114,7 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
     
     if filter_type == 'always':
         files_to_upload = all_files
-    
-    elif filter_type == 'date':
-        files_to_upload = [(local_path, s3_key) for local_path, s3_key in all_files 
-                          if extract_date_from_summary_path(s3_key) == target_date]
-    
+
     elif filter_type == 'year':
         current_year_files = []
         past_year_files = []
@@ -218,29 +192,16 @@ def main():
         return False
     
     total_uploaded = 0
-    
-    logging.info("\n[1/5] Uploading stocks/daily/core...")
+
+    logging.info("\n[1/3] Uploading stocks/daily/core...")
     core_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
     total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year')
-    
-    logging.info("\n[2/5] Uploading stocks/daily/indicators...")
-    indicators_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "indicators")
-    total_uploaded += upload_directory_parallel(indicators_dir, "stocks/daily/indicators", filter_type='year')
-    
-    logging.info("\n[3/5] Uploading stocks/summary...")
-    summary_dir = os.path.join(R2_OUTPUT, "stocks", "summary")
-    latest_date = get_latest_date_from_directory(summary_dir)
-    if latest_date:
-        logging.info(f"Latest date: {latest_date}")
-        total_uploaded += upload_directory_parallel(summary_dir, "stocks/summary", filter_type='date', target_date=latest_date)
-    else:
-        logging.warning("No valid summary files found")
-    
-    logging.info("\n[4/5] Uploading scores...")
+
+    logging.info("\n[2/3] Uploading scores...")
     scores_dir = os.path.join(R2_OUTPUT, "scores")
     total_uploaded += upload_directory_parallel(scores_dir, "scores", filter_type='year')
-    
-    logging.info("\n[5/5] Uploading metadata...")
+
+    logging.info("\n[3/3] Uploading metadata...")
     metadata_dir = os.path.join(R2_OUTPUT, "metadata")
     total_uploaded += upload_directory_parallel(metadata_dir, "metadata", filter_type='always')
     

@@ -24,7 +24,40 @@ DATA_FOLDER = "data"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
-CORE_ETFS = ['DIA', 'SPY', 'SOXX', 'IWM', 'QQQ', '^GSPC']
+# 市場全体・主要指数・セクターETF
+# フィルタリングで脱落させず、必ず最終CSVに含める「保証銘柄」。
+# value = (Company Name, Sector, Industry)
+# ※ Sector/Industry は 'N/A' とし、セクター/業種RSの集計には混ぜない
+#    （個別RSと core OHLCV としては取得・保存される）
+MARKET_SYMBOLS = {
+    # 主要指数（Yahoo Finance ティッカー）
+    '^GSPC': ('S&P 500', 'N/A', 'N/A'),
+    '^IXIC': ('NASDAQ Composite', 'N/A', 'N/A'),
+    '^DJI':  ('Dow Jones Industrial Average', 'N/A', 'N/A'),
+    '^RUT':  ('Russell 2000', 'N/A', 'N/A'),
+    # 主要ブロードETF
+    'SPY':   ('SPDR S&P 500 ETF', 'N/A', 'N/A'),
+    'QQQ':   ('Invesco QQQ Trust (NASDAQ100)', 'N/A', 'N/A'),
+    'DIA':   ('SPDR Dow Jones Industrial Average ETF', 'N/A', 'N/A'),
+    'IWM':   ('iShares Russell 2000 ETF', 'N/A', 'N/A'),
+    'SMH':   ('VanEck Semiconductor ETF', 'N/A', 'N/A'),
+    'SOXX':  ('iShares Semiconductor ETF', 'N/A', 'N/A'),
+    # 11 セクター SPDR ETF
+    'XLK':   ('Technology Select Sector SPDR', 'N/A', 'N/A'),
+    'XLF':   ('Financial Select Sector SPDR', 'N/A', 'N/A'),
+    'XLV':   ('Health Care Select Sector SPDR', 'N/A', 'N/A'),
+    'XLE':   ('Energy Select Sector SPDR', 'N/A', 'N/A'),
+    'XLI':   ('Industrial Select Sector SPDR', 'N/A', 'N/A'),
+    'XLY':   ('Consumer Discretionary Select Sector SPDR', 'N/A', 'N/A'),
+    'XLP':   ('Consumer Staples Select Sector SPDR', 'N/A', 'N/A'),
+    'XLU':   ('Utilities Select Sector SPDR', 'N/A', 'N/A'),
+    'XLB':   ('Materials Select Sector SPDR', 'N/A', 'N/A'),
+    'XLRE':  ('Real Estate Select Sector SPDR', 'N/A', 'N/A'),
+    'XLC':   ('Communication Services Select Sector SPDR', 'N/A', 'N/A'),
+}
+
+# 後方互換: IPO日チェックなどをバイパスする対象
+CORE_ETFS = list(MARKET_SYMBOLS.keys())
 
 def get_us_stocks():
     """NYSE・NASDAQ銘柄一覧を取得"""
@@ -196,6 +229,33 @@ def filter_stocks():
     
     return pd.DataFrame(filtered_stocks) if filtered_stocks else None
 
+def inject_market_symbols(df):
+    """
+    主要指数・ブロードETF・セクターETF を必ず最終CSVに含める。
+    通常のフィルタ結果に同一シンボルがあれば取り除き、保証行で上書きする。
+    （価格・時価総額は yfinance 側で別途取得するため 0 でよい）
+    """
+    if df is not None and len(df) > 0:
+        df = df[~df['Symbol'].isin(MARKET_SYMBOLS)]
+
+    rows = []
+    for symbol, (name, sector, industry) in MARKET_SYMBOLS.items():
+        rows.append({
+            'Symbol': symbol,
+            'Company Name': name,
+            'Sector': sector,
+            'Industry': industry,
+            'Price': 0,
+            'Market_Cap': 0,
+            'IPO_Date': '',
+            'Exchange': 'INDEX/ETF'
+        })
+
+    market_df = pd.DataFrame(rows)
+    combined = pd.concat([df, market_df], ignore_index=True) if df is not None else market_df
+    logger.info(f"保証銘柄を注入: {len(market_df)}件（指数・ETF）")
+    return combined
+
 def main():
     """対象銘柄を取得してdata/target_stocks_latest.csvに保存"""
     if not API_KEY:
@@ -210,11 +270,17 @@ def main():
         logger.info("="*60)
         
         df = filter_stocks()
-        
+
+        if df is None or len(df) == 0:
+            logger.warning("通常銘柄の取得に失敗。保証銘柄（指数・ETF）のみで継続します")
+
+        # 主要指数・ETF を必ず含める
+        df = inject_market_symbols(df)
+
         if df is None or len(df) == 0:
             logger.error("銘柄の取得に失敗しました")
             return False
-        
+
         output_path = os.path.join(DATA_FOLDER, 'target_stocks_latest.csv')
         df.to_csv(output_path, index=False, encoding='utf-8-sig')
         
