@@ -142,10 +142,10 @@ def main():
         logging.error("No symbols found")
         return False
         
-    # ★ 追加: S&P500を追加（RRS計算用）
+    # S&P500（^GSPC）は保証銘柄。CSVに無い場合の保険として追加
     if '^GSPC' not in symbols:
         symbols.append('^GSPC')
-        logging.info("Added ^GSPC (S&P 500) for RRS calculation")
+        logging.info("Added ^GSPC (S&P 500)")
 
     # 1000日前から取得
     start_date = (datetime.now() - timedelta(days=1000)).strftime('%Y-%m-%d')
