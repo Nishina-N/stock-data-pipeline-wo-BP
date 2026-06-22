@@ -7,6 +7,7 @@ cleanup_deprecated_r2.py
   - stocks/daily/indicators/   （indicators 系統の廃止）
   - scores/RRS_scores/         （RRS 廃止）
   - stocks/summary/            （summary 廃止）
+  - scores/BuyPressure/        （wo-BP 版では不要な残存データ）
 
 安全設計:
   - 既定は dry-run（一覧と件数のみ表示、削除しない）
@@ -31,6 +32,7 @@ DEPRECATED_PREFIXES = [
     "stocks/daily/indicators/",
     "scores/RRS_scores/",
     "stocks/summary/",
+    "scores/BuyPressure/",   # 本リポジトリ(wo-BP)では不要な残存データ
 ]
 
 def create_s3_client():
