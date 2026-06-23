@@ -12,11 +12,15 @@ RS 計算（Individual / Sector / Industry）。
   - temp_rs_industry.json
 """
 import json
+import os
+import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging
-import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.symbols import load_symbols_info
 
 DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
@@ -27,26 +31,6 @@ TEMP_RS_SECTOR_JSON = os.path.join(DATA_FOLDER, "temp_rs_sector.json")
 TEMP_RS_INDUSTRY_JSON = os.path.join(DATA_FOLDER, "temp_rs_industry.json")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-def load_symbols_info():
-    """target_stocks_latest.csvから銘柄情報を取得"""
-    if not os.path.exists(TARGET_STOCKS_CSV):
-        logging.error(f"Target stocks file not found: {TARGET_STOCKS_CSV}")
-        return {}
-
-    df = pd.read_csv(TARGET_STOCKS_CSV)
-
-    symbols_info = {}
-    for _, row in df.iterrows():
-        symbol = row['Symbol']
-        symbols_info[symbol] = {
-            'name': row.get('Company Name', symbol),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A')
-        }
-
-    logging.info(f"Loaded info for {len(symbols_info)} symbols")
-    return symbols_info
 
 def calculate_individual_rs_vectorized(price_data, min_days=252):
     """Individual RS（生値）を計算"""
@@ -216,7 +200,7 @@ def main():
 
     logging.info(f"Loaded price data: {len(price_data['symbols'])} symbols")
 
-    symbols_info = load_symbols_info()
+    symbols_info = load_symbols_info(TARGET_STOCKS_CSV)
     if not symbols_info:
         logging.error("No symbols info found")
         return False

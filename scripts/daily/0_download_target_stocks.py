@@ -4,11 +4,13 @@
 R2からtarget_stocks_latest.csvをダウンロード
 存在しない場合は1_fetch_target_stocks.pyを実行
 """
-import boto3
 import os
 import logging
 import sys
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.r2 import create_s3_client
 
 # .envファイルを読み込む
 load_dotenv()
@@ -31,13 +33,7 @@ def download_from_r2():
         return False
     
     # S3互換クライアント作成
-    s3 = boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto'
-    )
+    s3 = create_s3_client()
     
     bucket_name = os.environ['R2_BUCKET_NAME']
     
