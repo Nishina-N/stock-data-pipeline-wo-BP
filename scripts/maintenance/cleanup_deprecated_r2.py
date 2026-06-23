@@ -35,7 +35,8 @@ DEPRECATED_PREFIXES = [
     "stocks/daily/indicators/",
     "scores/RRS_scores/",
     "stocks/summary/",
-    "scores/BuyPressure/",   # 本リポジトリ(wo-BP)では不要な残存データ
+    "scores/BuyPressure/",          # 本リポジトリ(wo-BP)では不要な残存データ
+    "scores/RS_scores/individual/", # core の rs_percentile と重複（日次出力も停止済み）
 ]
 
 def list_keys(s3, bucket, prefix):
