@@ -23,8 +23,10 @@
 - セクターSPDR 11種: `XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC`
 - これらは Sector/Industry を `N/A` とし、セクター/業種RSの集計には混ぜない（個別RS と core OHLCV としては保持）。
 
-> 注意: R2上の旧データ（indicators/RRS_scores/summary、各 `*_raw`）は本変更では削除していない。
-> 次回 monthly 実行で CSV に保証銘柄が反映される。旧R2オブジェクトの掃除は別途 `scripts/maintenance/clear_r2_folders.py` 等で実施。
+> 注意: R2上の旧データ（indicators/RRS_scores/summary/BuyPressure）は `scripts/maintenance/cleanup_deprecated_r2.py --execute` で削除済み。
+> 各 core ファイル内の `*_raw`/`rrs_*` フィールドは履歴ファイルに残存（低優先のため未除去）。
+> 旧R2オブジェクトの掃除・棚卸しは `scripts/maintenance/cleanup_deprecated_r2.py`（削除）/ `check_r2_files.py`（集計）で実施する。
+> ※ 旧フルパイプライン（`1_〜5_*`）と `clear_r2*.py` / `delete_scores_years.py` は現モデルと非互換のため削除した。
 
 > 以下は変更前の棚卸し記録（参照用）。
 
