@@ -8,11 +8,15 @@
   このステップは pkl → json の変換のみを行う。
 """
 import os
+import sys
 import pandas as pd
 import numpy as np
 from datetime import datetime
 import logging
 import json
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.symbols import load_symbols_info
 
 DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
@@ -85,26 +89,6 @@ def convert_to_json(price_data, symbols_info):
     logging.info(f"✅ Converted {len(output['symbols'])} symbols to JSON")
     return output
 
-def load_symbols_info():
-    """target_stocks_latest.csvから銘柄情報を取得"""
-    if not os.path.exists(TARGET_STOCKS_CSV):
-        logging.error(f"Target stocks file not found: {TARGET_STOCKS_CSV}")
-        return {}
-
-    df = pd.read_csv(TARGET_STOCKS_CSV)
-
-    symbols_info = {}
-    for _, row in df.iterrows():
-        symbol = row['Symbol']
-        symbols_info[symbol] = {
-            'name': row.get('Company Name', symbol),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A')
-        }
-
-    logging.info(f"Loaded info for {len(symbols_info)} symbols")
-    return symbols_info
-
 def main():
     """pkl → json 変換メイン処理"""
     logging.info("="*60)
@@ -119,7 +103,7 @@ def main():
     price_data = pd.read_pickle(TEMP_PRICE_PKL)
     logging.info(f"Loaded: {price_data.shape}")
 
-    symbols_info = load_symbols_info()
+    symbols_info = load_symbols_info(TARGET_STOCKS_CSV)
 
     if not symbols_info:
         logging.error("No symbols info found")

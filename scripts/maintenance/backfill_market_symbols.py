@@ -22,52 +22,21 @@ import argparse
 import io
 import json
 import os
+import sys
 import logging
-import boto3
 import pandas as pd
 import yfinance as yf
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.market_symbols import MARKET_SYMBOLS
+from common.r2 import create_s3_client
 
 load_dotenv(dotenv_path=".env")
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# daily/1_fetch_target_stocks.py の MARKET_SYMBOLS と同一内容（将来 utils へ集約予定）
-# value = (Company Name, Sector, Industry)
-MARKET_SYMBOLS = {
-    '^GSPC': ('S&P 500', 'N/A', 'N/A'),
-    '^IXIC': ('NASDAQ Composite', 'N/A', 'N/A'),
-    '^DJI':  ('Dow Jones Industrial Average', 'N/A', 'N/A'),
-    '^RUT':  ('Russell 2000', 'N/A', 'N/A'),
-    'SPY':   ('SPDR S&P 500 ETF', 'N/A', 'N/A'),
-    'QQQ':   ('Invesco QQQ Trust (NASDAQ100)', 'N/A', 'N/A'),
-    'DIA':   ('SPDR Dow Jones Industrial Average ETF', 'N/A', 'N/A'),
-    'IWM':   ('iShares Russell 2000 ETF', 'N/A', 'N/A'),
-    'SMH':   ('VanEck Semiconductor ETF', 'N/A', 'N/A'),
-    'SOXX':  ('iShares Semiconductor ETF', 'N/A', 'N/A'),
-    'XLK':   ('Technology Select Sector SPDR', 'N/A', 'N/A'),
-    'XLF':   ('Financial Select Sector SPDR', 'N/A', 'N/A'),
-    'XLV':   ('Health Care Select Sector SPDR', 'N/A', 'N/A'),
-    'XLE':   ('Energy Select Sector SPDR', 'N/A', 'N/A'),
-    'XLI':   ('Industrial Select Sector SPDR', 'N/A', 'N/A'),
-    'XLY':   ('Consumer Discretionary Select Sector SPDR', 'N/A', 'N/A'),
-    'XLP':   ('Consumer Staples Select Sector SPDR', 'N/A', 'N/A'),
-    'XLU':   ('Utilities Select Sector SPDR', 'N/A', 'N/A'),
-    'XLB':   ('Materials Select Sector SPDR', 'N/A', 'N/A'),
-    'XLRE':  ('Real Estate Select Sector SPDR', 'N/A', 'N/A'),
-    'XLC':   ('Communication Services Select Sector SPDR', 'N/A', 'N/A'),
-}
-
 CORE_PREFIX = "stocks/daily/core"
-
-def create_s3_client():
-    return boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto'
-    )
 
 def fetch_ohlcv(symbol):
     """yfinance で上場来 OHLCV を取得（単一銘柄）"""

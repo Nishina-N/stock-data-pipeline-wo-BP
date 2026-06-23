@@ -20,9 +20,12 @@ cleanup_deprecated_r2.py
 """
 import argparse
 import os
+import sys
 import logging
-import boto3
 from dotenv import load_dotenv
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.r2 import create_s3_client
 
 load_dotenv()
 
@@ -34,15 +37,6 @@ DEPRECATED_PREFIXES = [
     "stocks/summary/",
     "scores/BuyPressure/",   # 本リポジトリ(wo-BP)では不要な残存データ
 ]
-
-def create_s3_client():
-    return boto3.client(
-        's3',
-        endpoint_url=os.environ['R2_ENDPOINT'],
-        aws_access_key_id=os.environ['R2_ACCESS_KEY_ID'],
-        aws_secret_access_key=os.environ['R2_SECRET_ACCESS_KEY'],
-        region_name='auto'
-    )
 
 def list_keys(s3, bucket, prefix):
     keys = []
