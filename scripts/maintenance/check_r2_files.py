@@ -51,7 +51,7 @@ def human_size(num_bytes):
 
 
 # 本リポジトリが管理する系統（詳細に3階層まで表示）
-MANAGED_ROOTS = {'stocks', 'scores', 'metadata', 'fundamentals'}
+MANAGED_ROOTS = {'stocks', 'scores', 'metadata', 'fundamentals', 'market'}
 
 
 def top_prefix(key):
