@@ -41,6 +41,7 @@ python scripts/maintenance/verify_backfill.py AAPL MSFT    # 生成後の検証
 | スクリプト | 用途 | 安全装置 |
 |---|---|---|
 | `backfill_gap_2023_2024.py` | 2023前半の価格欠損 + 2023全体/2024前半の RS 欠損を埋め戻す（下記詳細）。 | `--dry-run` / `--build`（ローカル生成のみ） / `--execute` / `--upload-only` |
+| `backfill_sector_industry_2024.py` | `scores/RS_scores/{sector,industry}/2024.json` の前半欠損（2024-01-02〜10-07）を埋める（下記詳細）。 | `--build` / `--execute` / `--upload-only` |
 | `backfill_market_symbols.py` | 主要指数・ETF の上場来 OHLCV を core に補充（欠けている年のみ）。 | 既定 dry-run、`--execute` で実書込 |
 | `cleanup_deprecated_r2.py` | 廃止系統（indicators/RRS/summary/BuyPressure）のオブジェクトを R2 から削除。 | 既定 dry-run、`--execute` で実削除 |
 
@@ -108,3 +109,40 @@ python scripts/maintenance/backfill_gap_2023_2024.py --execute
 2023/2024 が完全化した後は、日次パイプラインの過去年保護により再 truncate は起きない。
 ただし構造として「新年ファイルが初回に不完全なまま凍結される」余地は残るため、
 恒久対策が必要なら **年末に前年ファイルの完全性チェック→不足なら backfill** を定型化するとよい。
+
+---
+
+## `backfill_sector_industry_2024.py` 詳細
+
+### 背景
+
+個別RS（core）は `backfill_gap_2023_2024.py` で補充済みだが、そこから導出される
+**sector/industry の年別スコア**（`scores/RS_scores/{sector,industry}/2024.json`）は
+別ファイルのため未修正で、**2024-10-08 以降（59日）しか無い**状態だった
+（前半 2024-01-02〜10-07 の約192営業日が欠損）。他の年は完全。
+
+### 補充方針（本番 `3_calculate_rs.py` と同一ロジック）
+
+1. `core/2024/{symbol}.json` から個別 `rs_percentile`（date×symbol）と、
+   各銘柄の最新 `close*volume`（加重）を読む
+2. sector/industry ごとに `rs_percentile` を加重平均 → グループ間で再 percentile（`rank*98+1`）
+3. `date, sector|industry, rs_percentile, rank, stock_count`（industry は `sector` も付与）を生成
+4. 既存の `2024.json`（Oct–Dec）とマージし日付順に書き戻し（既存行は保全）
+5. `sector/2024.json` と `industry/2024.json` の2ファイルのみアップロード
+
+### 実行
+
+```bash
+python scripts/maintenance/backfill_sector_industry_2024.py --build        # ローカル生成のみ
+python scripts/maintenance/backfill_sector_industry_2024.py --upload-only   # R2へ2ファイル反映
+# （生成+反映を一括）
+python scripts/maintenance/backfill_sector_industry_2024.py --execute
+```
+
+### 注意点・検証
+
+- 加重は「各銘柄の最新 close×volume」（本番と同じく単一スカラー重み）。再 percentile により
+  最終値はスケール不変なので、重みの近似は最終ランクにほぼ影響しない。
+- 境界連続性で妥当性を確認済み：欠損側の 2024-10-07 と既存側の 2024-10-08 が
+  同一グループで一致（例 Financial Services=82.67 / rank 3）。
+- 反映結果：sector/2024 59→**252日**、industry/2024 59→**252日**（通年）。
