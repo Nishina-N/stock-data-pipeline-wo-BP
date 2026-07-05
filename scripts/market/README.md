@@ -19,11 +19,12 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 {
   "year": 2024,
   "adjust": "auto_adjusted_close",
-  "tickers": ["^VIX","^VIX3M","HYG","JNK","LQD","IEI","IWM","SPY"],
+  "tickers": ["^VIX","^VIX3M","HYG","JNK","LQD","IEI","IWM","SPY",
+              "HG=F","GC=F","CL=F","DX-Y.NYB","TIP","IEF","DBC","DBB"],
   "data": {
     "2024-08-05": {
       "^VIX": {"open":23.4,"high":65.7,"low":23.4,"close":38.6,"volume":null},
-      "HYG":  {"open":68.6,"high":69.2,"low":68.5,"close":69.1,"volume":104456100},
+      "HG=F": {"open":4.03,"high":4.10,"low":4.01,"close":4.06,"volume":...},
       "...":  "..."
     }
   }
@@ -31,13 +32,15 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 ```
 
 - **統合・年別**を採用（銘柄別ではなく）。リスク計算で全シリーズを 1 ファイルで日付整列でき、
-  `^` を含むティッカーも JSON キーなので扱える。
+  `^` / `=F` / `.NYB` を含むティッカーも JSON キーなので扱える。
 - カバレッジが揃わない年はそのティッカーのキーが欠落（日付行自体は他シリーズで存在）。
-  例: 1990=`^VIX`のみ、1993=+SPY、2000=+IWM、2007=全8。
+  例: 1971=`DX-Y.NYB`のみ、1990=+`^VIX`、1993=+SPY、2007=信用系まで、以降は全16。
 - **auto_adjust 済み終値**。比率（HYG/IEI 等）はトータルリターン的に adjusted が適切。
 - SPY/IWM は core にもあるが、market 層を自己完結させるため重複格納。
 
 ## シリーズと用途
+
+### リスク制御（VIX / 信用 / リスク選好）
 
 | ティッカー | 内容 | 実測開始 | 用途 |
 |---|---|---|---|
@@ -50,30 +53,59 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 | `IWM` | ラッセル2000 | 2000-05 | `IWM/SPY`＝リスク選好 |
 | `SPY` | S&P500 ETF | 1993-01 | 基準 |
 
-> 派生指標（VIX/VIX3M比・HYG/IEI比・IWM/SPY比等）は**しきい値チューニング前提のため保存せず**、
-> raw シリーズのみ格納。計算は利用側。将来必要なら `market/risk/{year}.json` を別層で追加。
+### マクロ / コモディティ（セクターローテ・景気/金利感応）
+
+| ティッカー | 内容 | 実測開始 | 用途 |
+|---|---|---|---|
+| `HG=F` | 銅先物 | 2000-08 | 景気敏感（`HG=F/GC=F`＝銅/金比） |
+| `GC=F` | 金先物 | 2000-08 | 逃避・実質金利（銅/金比） |
+| `CL=F` | 原油先物 | 2000-08 | エネルギー業種・原油トレンド |
+| `DX-Y.NYB` | ドル指数（ICE） | 1971-01 | 資源・多国籍、DXYトレンド |
+| `TIP` | TIPS ETF | 2003-12 | 実質金利・期待インフレ（vs `IEF`） |
+| `IEF` | 7-10年米国債ETF | 2002-07 | ブレークイーブンの対（`IEF`−`TIP`相当） |
+| `DBC` | 広義コモディティETF | 2006-02 | 資源業種全般 |
+| `DBB` | 基本金属ETF | 2007-01 | 基本金属 |
+
+> **金利（10y/2y/30y）は含めない**：Yahoo は `^TNX` 等の履歴を現状返さず、2年物の指数も無いため。
+> 曲線傾き（10y−2y）等は **FRED（`DGS2`/`DGS10`/…）を別ソースで `market/rates/` に格納する想定**（未実装）。
+
+> 派生指標（VIX/VIX3M比・銅/金比・HYG/IEI比・IWM/SPY比等）は**しきい値チューニング前提のため
+> 保存せず**、raw シリーズのみ格納。計算は利用側。
 
 ## スクリプト
 
 | スクリプト | 用途 |
 |---|---|
-| `fetch_market_series.py` | Yahoo から 8 シリーズ取得（auto_adjust）→ `data/temp_market.json` |
-| `build_market_by_year.py` | 年別統合ファイル + metadata を `data/market/r2/market/` に生成 |
-| `upload_market_to_r2.py` | R2 へアップロード（過去年は不足時のみ／当年上書き／metadata常時、既定 dry-run） |
+| `fetch_market_series.py` | Yahoo から取得（auto_adjust）→ `data/temp_market.json`。`--only`/`--start`/`--end`/`--strict`（劣化検知） |
+| `build_market_by_year.py` | 年別統合ファイル + metadata を生成。`--merge`（既存R2に取得ティッカーを重ねる） |
+| `upload_market_to_r2.py` | R2 へアップロード（過去年は不足時のみ／当年上書き／metadata常時、既定 dry-run）。`--force-past`（過去年も上書き） |
 
 ### 実行手順
 
 ```bash
-# フル履歴（初回）
-python scripts/market/fetch_market_series.py
+# フル履歴（初回・全シリーズ新規）
+python scripts/market/fetch_market_series.py --strict
 python scripts/market/build_market_by_year.py
 python scripts/market/upload_market_to_r2.py            # dry-run で計画確認
 python scripts/market/upload_market_to_r2.py --execute  # R2 投入
 
-# 期間指定（ドライラン/日次相当）
+# シリーズ追加（既存を壊さずマージ）
+python scripts/market/fetch_market_series.py --only "HG=F,GC=F,CL=F" --strict
+python scripts/market/build_market_by_year.py --merge   # 既存R2ファイルに重ねる
+python scripts/market/upload_market_to_r2.py --force-past --execute  # 既存年も上書きして反映
+
+# 日次更新（当年のみ）
 python scripts/market/fetch_market_series.py --start 2026-01-01
-python scripts/market/build_market_by_year.py
-python scripts/market/upload_market_to_r2.py --execute  # 当年ファイルを上書き更新
+python scripts/market/build_market_by_year.py --merge
+python scripts/market/upload_market_to_r2.py --execute
 ```
+
+### 取得の安全弁（重要）
+
+`^VIX3M` 等は Yahoo が稀に「最新1行」しか返さない断続障害がある。これを気付かず
+`--force-past` で再投入すると**既存の全年からそのシリーズが潰れる**。防止のため：
+
+- `fetch --strict`：空 or 行数極小（`--min-rows`、既定100）のシリーズがあれば**失敗**して停止
+- シリーズ追加時は `--only` で対象だけ取得 → `build --merge` で**既存シリーズに触れない**
 
 日次更新は当年ファイルの上書きで回る（core と同じ凍結流儀）。過去年は一度投入すれば凍結。

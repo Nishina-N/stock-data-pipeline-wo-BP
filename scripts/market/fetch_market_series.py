@@ -28,15 +28,27 @@ DATA_FOLDER = "data"
 OUT_JSON = os.path.join(DATA_FOLDER, "temp_market.json")
 
 # 取得対象と用途（metadata と一致させる）
+# 全て Yahoo Finance・auto_adjust 済み OHLCV。金利(yield)は Yahoo が履歴を返さないため
+# 対象外（別途 FRED で market/rates に格納する想定）。
 SERIES = {
-    "^VIX":   {"name": "VIX",            "use": "level+spike"},
-    "^VIX3M": {"name": "VIX 3M",         "use": "term_structure"},
-    "HYG":    {"name": "HY Bond ETF",    "use": "credit"},
-    "JNK":    {"name": "HY Bond ETF",    "use": "credit_confirm"},
-    "LQD":    {"name": "IG Bond ETF",    "use": "credit_ig"},
-    "IEI":    {"name": "3-7Y UST ETF",   "use": "duration_hedge"},
-    "IWM":    {"name": "Russell 2000",   "use": "risk_appetite"},
-    "SPY":    {"name": "S&P 500 ETF",    "use": "benchmark"},
+    # --- リスク制御（VIX/信用/リスク選好） ---
+    "^VIX":     {"name": "VIX",            "use": "level+spike"},
+    "^VIX3M":   {"name": "VIX 3M",         "use": "term_structure"},
+    "HYG":      {"name": "HY Bond ETF",    "use": "credit"},
+    "JNK":      {"name": "HY Bond ETF",    "use": "credit_confirm"},
+    "LQD":      {"name": "IG Bond ETF",    "use": "credit_ig"},
+    "IEI":      {"name": "3-7Y UST ETF",   "use": "duration_hedge"},
+    "IWM":      {"name": "Russell 2000",   "use": "risk_appetite"},
+    "SPY":      {"name": "S&P 500 ETF",    "use": "benchmark"},
+    # --- マクロ/コモディティ（セクターローテ・景気/金利感応） ---
+    "HG=F":     {"name": "Copper Futures", "use": "cyclical (copper/gold ratio)"},
+    "GC=F":     {"name": "Gold Futures",   "use": "safe_haven (copper/gold ratio)"},
+    "CL=F":     {"name": "Crude Oil Futures", "use": "energy_trend"},
+    "DX-Y.NYB": {"name": "US Dollar Index (ICE)", "use": "dollar_trend"},
+    "TIP":      {"name": "TIPS ETF",       "use": "real_rate/breakeven (vs IEF)"},
+    "IEF":      {"name": "7-10Y UST ETF",  "use": "nominal (breakeven pair)"},
+    "DBC":      {"name": "Broad Commodity ETF", "use": "commodity_broad"},
+    "DBB":      {"name": "Base Metals ETF", "use": "base_metals"},
 }
 
 
@@ -83,22 +95,48 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--start', default=None, help='開始日 YYYY-MM-DD（未指定=フル履歴）')
     ap.add_argument('--end', default=None, help='終了日 YYYY-MM-DD')
+    ap.add_argument('--strict', action='store_true',
+                    help='空 or 行数極小のシリーズがあれば失敗（force-past再投入前の劣化防止）')
+    ap.add_argument('--min-rows', type=int, default=100,
+                    help='strict時、この行数未満のシリーズを劣化とみなす（既定100）')
+    ap.add_argument('--only', default=None,
+                    help='取得を限定（カンマ区切り。例: "HG=F,GC=F,CL=F"）')
     args = ap.parse_args()
+
+    targets = list(SERIES.keys())
+    if args.only:
+        want = [t.strip() for t in args.only.split(',') if t.strip()]
+        unknown = [t for t in want if t not in SERIES]
+        if unknown:
+            logging.error(f"unknown tickers in --only: {unknown}")
+            return False
+        targets = want
 
     logging.info("=" * 60)
     logging.info(f"FETCH MARKET SERIES (start={args.start or 'max'}, end={args.end or 'today'})")
     logging.info("=" * 60)
 
     result = {}
-    for ticker in SERIES:
+    degraded = []
+    for ticker in targets:
         rows = fetch_one(ticker, args.start, args.end)
         result[ticker] = rows
-        if rows:
-            dates = sorted(rows.keys())
-            logging.info(f"✓ {ticker:8} {len(rows):5} rows  {dates[0]}..{dates[-1]}")
-        else:
+        n = len(rows)
+        if n == 0:
+            degraded.append((ticker, 0))
             logging.warning(f"✗ {ticker:8} no data")
+        else:
+            dates = sorted(rows.keys())
+            logging.info(f"✓ {ticker:8} {n:5} rows  {dates[0]}..{dates[-1]}")
+            # 期間未指定（フル）で行数が極小 = transient 劣化の疑い
+            if args.strict and args.start is None and n < args.min_rows:
+                degraded.append((ticker, n))
         time.sleep(0.5)
+
+    if args.strict and degraded:
+        logging.error(f"STRICT: 劣化シリーズ {degraded} (< {args.min_rows}行) — "
+                      f"transient の可能性。再実行してください（劣化保存を防止）")
+        return False
 
     os.makedirs(DATA_FOLDER, exist_ok=True)
     with open(OUT_JSON, 'w') as f:
