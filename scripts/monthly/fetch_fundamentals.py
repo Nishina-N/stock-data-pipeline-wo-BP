@@ -6,6 +6,11 @@ FMP APIから四半期財務データを取得
 - Free Cash Flow, Operating Cash Flow
 - Stockholders Equity, BPS, PSR
 - ROE（自動計算）
+- ROIC（FMP key-metrics の returnOnInvestedCapital をパーセント換算して格納）
+
+FMP stable API 使用（2025-08-31 以降の新プランは legacy /api/v3 が 403 になるため）。
+- 財務3表・key-metrics・ratios はすべて /stable、symbol はクエリパラメータ
+- BPS/PSR は /stable/ratios、ROIC は /stable/key-metrics の returnOnInvestedCapital
 """
 import os
 import requests
@@ -21,7 +26,7 @@ import time
 load_dotenv()
 
 API_KEY = os.getenv('FMP_API_KEY')
-BASE_URL = "https://financialmodelingprep.com/api/v3"
+BASE_URL = "https://financialmodelingprep.com/stable"
 
 DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
@@ -61,20 +66,20 @@ def fetch_income_statement(symbol, session=None, limit=QUARTER_LIMIT):
     if session is None:
         session = SESSION
     
-    url = f"{BASE_URL}/income-statement/{symbol}"
-    params = {'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
-    
+    url = f"{BASE_URL}/income-statement"
+    params = {'symbol': symbol, 'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
+
     try:
         response = session.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
-        
+
         data_sorted = sorted(data, key=lambda x: x.get('date', ''))
-        
+
         return {
             'dates': [item.get('date') for item in data_sorted],
             'eps': [item.get('eps') for item in data_sorted],
-            'epsDiluted': [item.get('epsdiluted') for item in data_sorted],
+            'epsDiluted': [item.get('epsDiluted') for item in data_sorted],
             'revenue': [item.get('revenue') for item in data_sorted],
             'netIncome': [item.get('netIncome') for item in data_sorted]
         }
@@ -86,8 +91,8 @@ def fetch_cash_flow_statement(symbol, session=None, limit=QUARTER_LIMIT):
     if session is None:
         session = SESSION
     
-    url = f"{BASE_URL}/cash-flow-statement/{symbol}"
-    params = {'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
+    url = f"{BASE_URL}/cash-flow-statement"
+    params = {'symbol': symbol, 'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
     
     try:
         response = session.get(url, params=params, timeout=15)
@@ -109,8 +114,8 @@ def fetch_balance_sheet(symbol, session=None, limit=QUARTER_LIMIT):
     if session is None:
         session = SESSION
     
-    url = f"{BASE_URL}/balance-sheet-statement/{symbol}"
-    params = {'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
+    url = f"{BASE_URL}/balance-sheet-statement"
+    params = {'symbol': symbol, 'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
     
     try:
         response = session.get(url, params=params, timeout=15)
@@ -127,20 +132,43 @@ def fetch_balance_sheet(symbol, session=None, limit=QUARTER_LIMIT):
         return None
 
 def fetch_key_metrics(symbol, session=None, limit=QUARTER_LIMIT):
-    """主要指標取得"""
+    """主要指標取得（ROIC）。stable では roic が returnOnInvestedCapital に改称。"""
     if session is None:
         session = SESSION
-    
-    url = f"{BASE_URL}/key-metrics/{symbol}"
-    params = {'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
-    
+
+    url = f"{BASE_URL}/key-metrics"
+    params = {'symbol': symbol, 'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
+
     try:
         response = session.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
-        
+
         data_sorted = sorted(data, key=lambda x: x.get('date', ''))
-        
+
+        return {
+            'dates': [item.get('date') for item in data_sorted],
+            # returnOnInvestedCapital は小数比率（例 0.58）。後段でパーセント換算する。
+            'roic': [item.get('returnOnInvestedCapital') for item in data_sorted]
+        }
+    except:
+        return None
+
+def fetch_ratios(symbol, session=None, limit=QUARTER_LIMIT):
+    """財務比率取得（BPS/PSR）。stable では key-metrics から ratios に移動。"""
+    if session is None:
+        session = SESSION
+
+    url = f"{BASE_URL}/ratios"
+    params = {'symbol': symbol, 'period': 'quarter', 'limit': limit, 'apikey': API_KEY}
+
+    try:
+        response = session.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        data_sorted = sorted(data, key=lambda x: x.get('date', ''))
+
         return {
             'dates': [item.get('date') for item in data_sorted],
             'bookValuePerShare': [item.get('bookValuePerShare') for item in data_sorted],
@@ -149,26 +177,28 @@ def fetch_key_metrics(symbol, session=None, limit=QUARTER_LIMIT):
     except:
         return None
 
-def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, start_date=START_DATE):
-    """4つのデータソースをマージ"""
-    if not all([income_data, cashflow_data, balance_data, metrics_data]):
+def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data, start_date=START_DATE):
+    """5つのデータソースをマージ"""
+    if not all([income_data, cashflow_data, balance_data, metrics_data, ratios_data]):
         return None
-    
+
     dates_income = set(income_data['dates'])
     dates_cashflow = set(cashflow_data['dates'])
     dates_balance = set(balance_data['dates'])
     dates_metrics = set(metrics_data['dates'])
-    
-    common_dates = dates_income & dates_cashflow & dates_balance & dates_metrics
+    dates_ratios = set(ratios_data['dates'])
+
+    common_dates = dates_income & dates_cashflow & dates_balance & dates_metrics & dates_ratios
     common_dates = sorted([d for d in common_dates if d >= start_date])
-    
+
     if not common_dates:
         return None
-    
+
     income_idx = {date: i for i, date in enumerate(income_data['dates'])}
     cashflow_idx = {date: i for i, date in enumerate(cashflow_data['dates'])}
     balance_idx = {date: i for i, date in enumerate(balance_data['dates'])}
     metrics_idx = {date: i for i, date in enumerate(metrics_data['dates'])}
+    ratios_idx = {date: i for i, date in enumerate(ratios_data['dates'])}
     
     # ROE計算
     roe_values = []
@@ -184,6 +214,11 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
     
     result = []
     for d in common_dates:
+        # ROIC: FMP の returnOnInvestedCapital は四半期スケールの小数比率。
+        # roe（四半期純利益/自己資本×4×100の年率%）と単位を揃えるため ×4×100 で年率化。
+        roic_raw = metrics_data['roic'][metrics_idx[d]]
+        roic = roic_raw * 4 * 100 if roic_raw is not None else None
+
         result.append({
             'date': d,
             'eps': income_data['eps'][income_idx[d]],
@@ -193,9 +228,10 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
             'freeCashFlow': cashflow_data['freeCashFlow'][cashflow_idx[d]],
             'operatingCashFlow': cashflow_data['operatingCashFlow'][cashflow_idx[d]],
             'stockholdersEquity': balance_data['stockholdersEquity'][balance_idx[d]],
-            'bookValuePerShare': metrics_data['bookValuePerShare'][metrics_idx[d]],
-            'priceToSalesRatio': metrics_data['priceToSalesRatio'][metrics_idx[d]],
-            'roe': roe_values[common_dates.index(d)]
+            'bookValuePerShare': ratios_data['bookValuePerShare'][ratios_idx[d]],
+            'priceToSalesRatio': ratios_data['priceToSalesRatio'][ratios_idx[d]],
+            'roe': roe_values[common_dates.index(d)],
+            'roic': roic
         })
     
     return result
@@ -220,8 +256,12 @@ def fetch_fundamental_data(symbol, session=None):
     metrics_data = fetch_key_metrics(symbol, session)
     if not metrics_data:
         return None
-    
-    quarterly_data = merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data)
+
+    ratios_data = fetch_ratios(symbol, session)
+    if not ratios_data:
+        return None
+
+    quarterly_data = merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data)
     
     if not quarterly_data:
         return None
