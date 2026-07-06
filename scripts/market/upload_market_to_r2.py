@@ -52,6 +52,8 @@ def existing_keys(s3, bucket):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--execute', action='store_true', help='実際にアップロード（既定はdry-run）')
+    ap.add_argument('--force-past', action='store_true',
+                    help='過去年ファイルも上書き（シリーズ追加などスキーマ変更の再投入用）')
     args = ap.parse_args()
 
     if not os.path.isdir(DAILY_DIR):
@@ -76,7 +78,9 @@ def main():
                 tasks.append((local, key, "current-year overwrite"))
             elif key not in existing:
                 tasks.append((local, key, "missing"))
-            # 既存の過去年はスキップ（凍結）
+            elif args.force_past:
+                tasks.append((local, key, "force-past overwrite"))
+            # それ以外の既存の過去年はスキップ（凍結）
 
         # metadata は常に
         meta_local = os.path.join(LOCAL_ROOT, "metadata.json")
