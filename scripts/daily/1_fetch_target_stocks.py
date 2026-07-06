@@ -28,12 +28,37 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from common.market_symbols import MARKET_SYMBOLS, CORE_ETFS
 
+STABLE_BASE = "https://financialmodelingprep.com/stable"
+
 def get_us_stocks():
-    """NYSE・NASDAQ銘柄一覧を取得"""
-    url = f"https://financialmodelingprep.com/api/v3/stock/list?apikey={API_KEY}"
-    response = requests.get(url)
-    data = response.json()
-    return [s for s in data if s.get('exchangeShortName') in ['NYSE', 'NASDAQ']]
+    """NYSE・NASDAQ銘柄一覧を取得（stable company-screener を使用）
+
+    stable の stock-list は exchangeShortName を返さないため、取引所で絞れる
+    company-screener を使用。bulk 系エンドポイントは最新データ欠落の実績があるため使わない。
+    """
+    stocks = []
+    for exch in ['NYSE', 'NASDAQ']:
+        url = f"{STABLE_BASE}/company-screener"
+        params = {
+            'exchange': exch,
+            'isActivelyTrading': 'true',
+            'limit': 10000,
+            'apikey': API_KEY,
+        }
+        response = requests.get(url, params=params, timeout=30)
+        data = response.json()
+        for s in data:
+            if s.get('exchangeShortName') not in ['NYSE', 'NASDAQ']:
+                continue
+            # 後続ロジックが参照するキー名（name / exchangeShortName）に正規化。
+            # price も screener が返すため、別途 quote を叩かずここで取得する。
+            stocks.append({
+                'symbol': s.get('symbol'),
+                'name': s.get('companyName', ''),
+                'exchangeShortName': s.get('exchangeShortName'),
+                'price': s.get('price'),
+            })
+    return stocks
 
 def is_common_stock_strict(symbol, name=""):
     """普通株式判定（厳密版）"""
@@ -78,30 +103,6 @@ def is_old_ipo(ipo_date_str):
     except:
         return False
 
-def get_batch_quotes(symbols, batch_size=100):
-    """バッチで株価を取得"""
-    results = {}
-    for i in range(0, len(symbols), batch_size):
-        batch = symbols[i:i + batch_size]
-        symbols_str = ','.join(batch)
-        url = f"https://financialmodelingprep.com/api/v3/quote/{symbols_str}?apikey={API_KEY}"
-        
-        try:
-            response = requests.get(url, timeout=20)
-            if response.status_code == 200:
-                data = response.json()
-                for item in data:
-                    sym = item.get('symbol')
-                    price = item.get('price')
-                    if sym and price is not None and price > 0:
-                        results[sym] = price
-            time.sleep(0.15)
-        except Exception as e:
-            logger.error(f"バッチ取得エラー: {e}")
-            time.sleep(1)
-    
-    return results
-
 def get_batch_profiles(symbols, batch_size=3):
     """バッチでプロファイルを取得"""
     results = {}
@@ -109,7 +110,7 @@ def get_batch_profiles(symbols, batch_size=3):
         batch = symbols[i:i + batch_size]
         
         for symbol in batch:
-            url = f"https://financialmodelingprep.com/api/v3/profile/{symbol}?apikey={API_KEY}"
+            url = f"{STABLE_BASE}/profile?symbol={symbol}&apikey={API_KEY}"
             try:
                 response = requests.get(url, timeout=15)
                 if response.status_code == 200:
@@ -129,7 +130,8 @@ def get_batch_profiles(symbols, batch_size=3):
                             logger.info(f"{symbol}: 除外 - 社名に上場廃止関連キーワード検出")
                             continue
                         
-                        exchange = profile.get('exchangeShortName', '')
+                        # stable profile は exchangeShortName ではなく exchange（短縮形）を返す
+                        exchange = profile.get('exchange', '')
                         if exchange not in ['NYSE', 'NASDAQ']:
                             continue
                         
@@ -150,11 +152,12 @@ def filter_stocks():
     pre_filtered = [s for s in stocks if s.get('symbol', '') in CORE_ETFS or is_common_stock_strict(s.get('symbol', ''), s.get('name', ''))]
     logger.info(f"フィルタリング後: {len(pre_filtered)}銘柄")
     
-    logger.info("株価を一括取得中...")
-    symbols = [s['symbol'] for s in pre_filtered]
-    prices = get_batch_quotes(symbols, batch_size=100)
+    logger.info("株価をスクリーナー結果から抽出中...")
+    # screener が返した price をそのまま使用（別途 quote は叩かない）
+    prices = {s['symbol']: s['price'] for s in pre_filtered
+              if s.get('price') is not None and s['price'] > 0}
     logger.info(f"株価取得完了: {len(prices)}銘柄")
-    
+
     price_filtered = [s for s in pre_filtered if s['symbol'] in prices]
     logger.info(f"株価取得済み銘柄: {len(price_filtered)}銘柄")
     
@@ -189,7 +192,7 @@ def filter_stocks():
                 'Sector': profile.get('sector', ''),
                 'Industry': profile.get('industry', ''),
                 'Price': prices[symbol],
-                'Market_Cap': profile.get('mktCap', 0),
+                'Market_Cap': profile.get('marketCap', 0),
                 'IPO_Date': profile.get('ipoDate', ''),
                 'Exchange': stock.get('exchangeShortName', '')
             })
