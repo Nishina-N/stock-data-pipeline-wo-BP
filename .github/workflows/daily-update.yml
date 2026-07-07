@@ -70,6 +70,28 @@ jobs:
         run: python scripts/daily/5_upload_to_r2.py
         timeout-minutes: 120
       
+      - name: 6. Fetch market/macro series (YTD)
+        run: python scripts/market/fetch_market_series.py --start $(date -u +%Y-01-01)
+        timeout-minutes: 20
+
+      - name: 7. Build market by year (merge into R2)
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python scripts/market/build_market_by_year.py --merge
+        timeout-minutes: 10
+
+      - name: 8. Upload market to R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python scripts/market/upload_market_to_r2.py --execute
+        timeout-minutes: 20
+
       - name: Cleanup temporary files
         if: always()
         run: rm -rf data/*
