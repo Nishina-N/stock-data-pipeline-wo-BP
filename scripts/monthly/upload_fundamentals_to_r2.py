@@ -3,7 +3,13 @@ upload_fundamentals_to_r2.py
 
 temp_fundamentals.json を年別構成でR2にアップロード
 stocks/fundamentals/quarterly/{year}/{symbol}.json
+
+デフォルト（引数なし・月次Actionの通常運用）は「year-freeze」:
+  - 過去年ファイルは R2 に既に存在すれば上書きしない（凍結）
+  - 当年（および未来日付）は常に上書き
+--force-past を付けると全年を上書き（スキーマ変更やバックフィル時に使う）。
 """
+import argparse
 import boto3
 import os
 import logging
@@ -17,8 +23,10 @@ load_dotenv()
 
 DATA_FOLDER = "data"
 TEMP_FUNDAMENTALS_JSON = os.path.join(DATA_FOLDER, "temp_fundamentals.json")
+R2_PREFIX = "stocks/fundamentals/quarterly/"
 
 MAX_WORKERS = 10
+CURRENT_YEAR = datetime.now().year
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -65,6 +73,21 @@ def split_fundamentals_by_year(fundamentals_dict):
     return symbol_year_data
 
 
+def list_existing_keys(endpoint, access_key, secret_key, bucket_name, prefix):
+    """R2 上の既存キー集合を返す（year-freeze の存在判定用）。"""
+    s3 = boto3.client('s3', endpoint_url=endpoint, aws_access_key_id=access_key,
+                      aws_secret_access_key=secret_key, region_name='auto')
+    keys = set()
+    try:
+        paginator = s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=bucket_name, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                keys.add(obj['Key'])
+    finally:
+        s3.close()
+    return keys
+
+
 def upload_single_object(endpoint, access_key, secret_key, bucket_name, key, body_bytes, max_retries=3):
     """スレッドごとに独立したクライアントでput_object（Daily方式）"""
     s3_client = None
@@ -97,8 +120,12 @@ def upload_single_object(endpoint, access_key, secret_key, bucket_name, key, bod
             s3_client.close()
 
 
-def upload_fundamentals_to_r2():
-    """Fundamental データを年別にR2アップロード（並列処理）"""
+def upload_fundamentals_to_r2(force_past=False):
+    """Fundamental データを年別にR2アップロード（並列処理）。
+
+    force_past=False（既定）: 過去年は R2 に既存なら凍結（上書きしない）、当年は常に上書き。
+    force_past=True: 全年を上書き（スキーマ変更・バックフィル用）。
+    """
 
     required_env = ['R2_ENDPOINT', 'R2_ACCESS_KEY_ID', 'R2_SECRET_ACCESS_KEY', 'R2_BUCKET_NAME']
     missing = [env for env in required_env if not os.environ.get(env)]
@@ -124,13 +151,25 @@ def upload_fundamentals_to_r2():
     secret_key = os.environ['R2_SECRET_ACCESS_KEY']
     bucket_name = os.environ['R2_BUCKET_NAME']
 
+    # year-freeze: 過去年の既存キーを取得（force_past 時はスキップ）
+    existing_keys = set()
+    if not force_past:
+        logging.info("Listing existing R2 keys for year-freeze...")
+        existing_keys = list_existing_keys(endpoint, access_key, secret_key, bucket_name, R2_PREFIX)
+        logging.info(f"  existing objects under {R2_PREFIX}: {len(existing_keys)}")
+
     # アップロードタスクを事前構築（メインスレッドでJSON化）
     now_iso = datetime.now().isoformat()
     upload_tasks = []
+    frozen_count = 0
 
     for symbol, year_data in symbol_year_data.items():
         for year, quarters in year_data.items():
             key = f"stocks/fundamentals/quarterly/{year}/{symbol}.json"
+            # 過去年かつ既存 → 凍結（上書きしない）。当年・未来・force_past は常に投入。
+            if not force_past and year < CURRENT_YEAR and key in existing_keys:
+                frozen_count += 1
+                continue
             output = {
                 'ticker': symbol,
                 'data': quarters,
@@ -140,6 +179,10 @@ def upload_fundamentals_to_r2():
             upload_tasks.append((key, body_bytes))
 
     total_files = len(upload_tasks)
+    if not force_past:
+        logging.info(f"year-freeze: {frozen_count} past-year files frozen (skipped)")
+    else:
+        logging.info("force_past: overwriting ALL years")
 
     logging.info(f"\n{'='*60}")
     logging.info("UPLOADING FUNDAMENTALS TO R2")
@@ -186,8 +229,12 @@ def upload_fundamentals_to_r2():
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--force-past', action='store_true',
+                        help='過去年も含め全年を上書き（スキーマ変更・バックフィル用）')
+    args = parser.parse_args()
     try:
-        return upload_fundamentals_to_r2()
+        return upload_fundamentals_to_r2(force_past=args.force_past)
     except Exception as e:
         logging.error(f"Upload failed: {e}", exc_info=True)
         return False

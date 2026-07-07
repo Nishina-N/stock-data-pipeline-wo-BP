@@ -13,9 +13,11 @@ FMP stable API 使用（2025-08-31 以降の新プランは legacy /api/v3 が 4
 - BPS/PSR は /stable/ratios、ROIC は /stable/key-metrics の returnOnInvestedCapital
 """
 import os
+import argparse
 import requests
 import json
 import logging
+from bisect import bisect_right
 from datetime import datetime
 from dotenv import load_dotenv
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -34,7 +36,10 @@ TEMP_FUNDAMENTALS_JSON = os.path.join(DATA_FOLDER, "temp_fundamentals.json")
 
 START_DATE = '2000-01-01'
 QUARTER_LIMIT = 120
-MAX_WORKERS = 5
+# レート制限回避のため既定は控えめ（並列3・銘柄ごと0.5秒ウェイト）。
+# フルフェッチはこの既定で十分ゆっくり。CLI で上書き可。
+MAX_WORKERS = 3
+REQUEST_DELAY = 0.5
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -177,7 +182,63 @@ def fetch_ratios(symbol, session=None, limit=QUARTER_LIMIT):
     except:
         return None
 
-def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data, start_date=START_DATE):
+def fetch_earnings(symbol, session=None, limit=QUARTER_LIMIT):
+    """決算サプライズ取得（stable/earnings）。
+
+    返す date は「決算発表日（announcement date）」で、財務3表の会計期末日とは異なる。
+    epsActual/epsEstimated/revenueActual/revenueEstimated を保持し、後段で
+    会計期末の各四半期に「その期を報告した発表」を突き合わせる。
+    """
+    if session is None:
+        session = SESSION
+
+    url = f"{BASE_URL}/earnings"
+    params = {'symbol': symbol, 'limit': limit, 'apikey': API_KEY}
+
+    try:
+        response = session.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        data_sorted = sorted(data, key=lambda x: x.get('date', ''))
+
+        return {
+            'dates': [item.get('date') for item in data_sorted],
+            'epsActual': [item.get('epsActual') for item in data_sorted],
+            'epsEstimated': [item.get('epsEstimated') for item in data_sorted],
+            'revenueActual': [item.get('revenueActual') for item in data_sorted],
+            'revenueEstimated': [item.get('revenueEstimated') for item in data_sorted],
+        }
+    except:
+        return None
+
+def _build_earnings_pairs(earnings_data):
+    """(announce_date, idx) を日付昇順で返す。ISO日付なので文字列ソート＝時系列。"""
+    if not earnings_data or not earnings_data.get('dates'):
+        return None
+    pairs = sorted((d, i) for i, d in enumerate(earnings_data['dates']) if d)
+    return pairs or None
+
+def _match_earnings_idx(period_end, pairs, max_days=120):
+    """会計期末 period_end を報告した決算発表（期末の直後・max_days以内の最初の発表）の idx。
+
+    発表は会計期末の後（数週間〜2か月）に出るため、period_end より後で最初の発表を採る。
+    """
+    if not pairs:
+        return None
+    dates = [p[0] for p in pairs]
+    j = bisect_right(dates, period_end)  # period_end より後で最初の発表
+    if j >= len(pairs):
+        return None
+    adate, idx = pairs[j]
+    try:
+        pe = datetime.strptime(period_end, '%Y-%m-%d')
+        ad = datetime.strptime(adate, '%Y-%m-%d')
+    except (ValueError, TypeError):
+        return None
+    return idx if (ad - pe).days <= max_days else None
+
+def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data, earnings_data=None, start_date=START_DATE):
     """5つのデータソースをマージ"""
     if not all([income_data, cashflow_data, balance_data, metrics_data, ratios_data]):
         return None
@@ -212,12 +273,29 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
             roe = None
         roe_values.append(roe)
     
+    earnings_pairs = _build_earnings_pairs(earnings_data)
+
     result = []
     for d in common_dates:
         # ROIC: FMP の returnOnInvestedCapital は四半期スケールの小数比率。
         # roe（四半期純利益/自己資本×4×100の年率%）と単位を揃えるため ×4×100 で年率化。
         roic_raw = metrics_data['roic'][metrics_idx[d]]
         roic = roic_raw * 4 * 100 if roic_raw is not None else None
+
+        # 決算サプライズ: この会計期末 d を報告した発表を突き合わせる（無ければ null）。
+        earnings_date = eps_actual = eps_estimated = None
+        revenue_estimated = eps_surprise_pct = revenue_surprise_pct = None
+        eidx = _match_earnings_idx(d, earnings_pairs)
+        if eidx is not None:
+            earnings_date = earnings_data['dates'][eidx]
+            eps_actual = earnings_data['epsActual'][eidx]
+            eps_estimated = earnings_data['epsEstimated'][eidx]
+            revenue_estimated = earnings_data['revenueEstimated'][eidx]
+            rev_actual = earnings_data['revenueActual'][eidx]
+            if eps_actual is not None and eps_estimated not in (None, 0):
+                eps_surprise_pct = round((eps_actual - eps_estimated) / abs(eps_estimated) * 100, 2)
+            if rev_actual is not None and revenue_estimated not in (None, 0):
+                revenue_surprise_pct = round((rev_actual - revenue_estimated) / abs(revenue_estimated) * 100, 2)
 
         result.append({
             'date': d,
@@ -231,9 +309,17 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
             'bookValuePerShare': ratios_data['bookValuePerShare'][ratios_idx[d]],
             'priceToSalesRatio': ratios_data['priceToSalesRatio'][ratios_idx[d]],
             'roe': roe_values[common_dates.index(d)],
-            'roic': roic
+            'roic': roic,
+            # 決算サプライズ（announcement 基準）。earningsDate はバックテストの
+            # point-in-time（情報公開日）判定に使える。
+            'earningsDate': earnings_date,
+            'epsActual': eps_actual,
+            'epsEstimated': eps_estimated,
+            'epsSurprisePct': eps_surprise_pct,
+            'revenueEstimated': revenue_estimated,
+            'revenueSurprisePct': revenue_surprise_pct,
         })
-    
+
     return result
 
 def fetch_fundamental_data(symbol, session=None):
@@ -261,10 +347,17 @@ def fetch_fundamental_data(symbol, session=None):
     if not ratios_data:
         return None
 
-    quarterly_data = merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data)
-    
+    # 決算サプライズは任意。取得失敗してもファンダ本体は生成する（サプライズは null）。
+    earnings_data = fetch_earnings(symbol, session)
+
+    quarterly_data = merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data, ratios_data, earnings_data)
+
     if not quarterly_data:
         return None
+
+    # レート制限回避: 銘柄処理ごとに軽くウェイト（並列ワーカー内で分散される）。
+    if REQUEST_DELAY:
+        time.sleep(REQUEST_DELAY)
     
     return {
         'ticker': symbol,
@@ -288,31 +381,46 @@ def load_target_stocks():
 
 def main():
     """メイン処理"""
+    global MAX_WORKERS, REQUEST_DELAY
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--limit', type=int, default=None, help='先頭N銘柄だけ取得（ドライラン用）')
+    parser.add_argument('--workers', type=int, default=MAX_WORKERS, help=f'並列数（既定 {MAX_WORKERS}）')
+    parser.add_argument('--delay', type=float, default=REQUEST_DELAY,
+                        help=f'銘柄ごとのウェイト秒（既定 {REQUEST_DELAY}）')
+    args = parser.parse_args()
+    MAX_WORKERS = args.workers
+    REQUEST_DELAY = args.delay
+
     logging.info("="*60)
     logging.info("FETCH FUNDAMENTAL DATA")
     logging.info("="*60)
-    
+
     if not API_KEY:
         logging.error("FMP_API_KEY not found")
         return False
-    
+
     symbols = load_target_stocks()
-    
+
     # Core ETFs typically don't have standard fundamentals, so exclude them
     CORE_ETFS = ['DIA', 'SPY', 'SOXX', 'IWM', 'QQQ', '^GSPC']
     symbols = [s for s in symbols if s not in CORE_ETFS]
-    
+
+    if args.limit:
+        symbols = symbols[:args.limit]
+        logging.info(f"DRY-RUN: limited to first {len(symbols)} symbols")
+
     if not symbols:
         logging.error("No symbols found")
         return False
-    
+
     fundamentals_dict = {}
     success_count = 0
     fail_count = 0
-    
+
     logging.info(f"Fetching fundamental data for {len(symbols)} symbols...")
-    logging.info(f"Parallel workers: {MAX_WORKERS}")
-    
+    logging.info(f"Parallel workers: {MAX_WORKERS}, per-symbol delay: {REQUEST_DELAY}s")
+
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
         futures = {executor.submit(fetch_fundamental_data, symbol): symbol for symbol in symbols}
         
