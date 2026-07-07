@@ -1,16 +1,34 @@
 """
 fetch_fundamentals.py
 
-FMP APIから四半期財務データを取得
-- EPS, Revenue, Net Income
-- Free Cash Flow, Operating Cash Flow
-- Stockholders Equity, BPS, PSR
-- ROE（自動計算）
-- ROIC（FMP key-metrics の returnOnInvestedCapital をパーセント換算して格納）
+FMP stable API から「四半期」財務データを取得する（period=quarter のみ。TTM/annual は使わない）。
+すべて当該四半期に帰属する値のみを格納し、将来情報のリークを避ける。
+
+格納フィールドと定義（すべて period=quarter 由来）:
+  date               会計四半期末日
+  eps / epsDiluted   当四半期の基本 / 希薄化EPS（フロー）
+  revenue            当四半期 売上（フロー）
+  netIncome          当四半期 純利益（フロー）
+  operatingCashFlow  当四半期 営業CF（フロー）
+  freeCashFlow       当四半期 FCF（フロー）
+  stockholdersEquity 期末 自己資本（スナップショット）
+  bookValuePerShare  期末 BPS = 自己資本/株式数（スナップショット）
+  roeQuarterly       生の四半期ROE(%) = netIncome / stockholdersEquity × 100
+  roe                年率ROE(%)       = roeQuarterly × 4
+  roicQuarterly      生の四半期ROIC(%) = FMP returnOnInvestedCapital × 100（単一四半期スケール）
+  roic               年率ROIC(%)       = roicQuarterly × 4
+  earningsDate       決算発表日（情報公開日 = point-in-time 用。stable/earnings 由来）
+  epsActual/epsEstimated/epsSurprisePct    当四半期のEPS実績/予想/サプライズ率(%)
+  revenueEstimated/revenueSurprisePct      当四半期の売上予想/サプライズ率(%)
+
+年率化(×4)は単一四半期を4倍する規約（TTM合算ではない＝リーク無し）。ROE と ROIC で単位統一。
+
+廃止: priceToSalesRatio（2026-07-08）。stable quarterly ratios の P/S は分母が単一四半期売上で
+標準P/Sの約4倍・季節歪みがあり誤解を生むため保存しない。P/S が必要なら利用側で
+marketCap ÷（直近4四半期 revenue 合算）で算出する。
 
 FMP stable API 使用（2025-08-31 以降の新プランは legacy /api/v3 が 403 になるため）。
-- 財務3表・key-metrics・ratios はすべて /stable、symbol はクエリパラメータ
-- BPS/PSR は /stable/ratios、ROIC は /stable/key-metrics の returnOnInvestedCapital
+財務3表・key-metrics・ratios・earnings はすべて /stable、symbol はクエリパラメータ。
 """
 import os
 import argparse
@@ -177,7 +195,6 @@ def fetch_ratios(symbol, session=None, limit=QUARTER_LIMIT):
         return {
             'dates': [item.get('date') for item in data_sorted],
             'bookValuePerShare': [item.get('bookValuePerShare') for item in data_sorted],
-            'priceToSalesRatio': [item.get('priceToSalesRatio') for item in data_sorted]
         }
     except:
         return None
@@ -261,25 +278,33 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
     metrics_idx = {date: i for i, date in enumerate(metrics_data['dates'])}
     ratios_idx = {date: i for i, date in enumerate(ratios_data['dates'])}
     
-    # ROE計算
-    roe_values = []
+    # ROE計算（当該四半期の純利益 / 当該四半期末の自己資本。将来リーク・TTM不使用）
+    #   roeQuarterly = NI / 自己資本 × 100   … 生の四半期ROE(%)
+    #   roe          = roeQuarterly × 4      … 年率ROE(%, ROIC と単位を揃える)
+    roe_values = []      # 年率化(×4)
+    roe_q_values = []    # 生の四半期
     for d in common_dates:
         net_income = income_data['netIncome'][income_idx[d]]
         equity = balance_data['stockholdersEquity'][balance_idx[d]]
-        
+
         if equity and equity != 0 and net_income is not None:
-            roe = (net_income / equity) * 4 * 100
+            roe_q = (net_income / equity) * 100
+            roe = roe_q * 4
         else:
+            roe_q = None
             roe = None
         roe_values.append(roe)
-    
+        roe_q_values.append(roe_q)
+
     earnings_pairs = _build_earnings_pairs(earnings_data)
 
     result = []
-    for d in common_dates:
-        # ROIC: FMP の returnOnInvestedCapital は四半期スケールの小数比率。
-        # roe（四半期純利益/自己資本×4×100の年率%）と単位を揃えるため ×4×100 で年率化。
+    for i, d in enumerate(common_dates):
+        # ROIC: FMP quarterly returnOnInvestedCapital は「単一四半期」の小数比率（TTMではない）。
+        #   roicQuarterly = raw × 100          … 生の四半期ROIC(%)
+        #   roic          = roicQuarterly × 4  … 年率ROIC(%, ROE と単位を揃える)
         roic_raw = metrics_data['roic'][metrics_idx[d]]
+        roic_q = roic_raw * 100 if roic_raw is not None else None
         roic = roic_raw * 4 * 100 if roic_raw is not None else None
 
         # 決算サプライズ: この会計期末 d を報告した発表を突き合わせる（無ければ null）。
@@ -307,9 +332,10 @@ def merge_quarterly_data(income_data, cashflow_data, balance_data, metrics_data,
             'operatingCashFlow': cashflow_data['operatingCashFlow'][cashflow_idx[d]],
             'stockholdersEquity': balance_data['stockholdersEquity'][balance_idx[d]],
             'bookValuePerShare': ratios_data['bookValuePerShare'][ratios_idx[d]],
-            'priceToSalesRatio': ratios_data['priceToSalesRatio'][ratios_idx[d]],
-            'roe': roe_values[common_dates.index(d)],
-            'roic': roic,
+            'roeQuarterly': roe_q_values[i],   # 生の四半期ROE(%) = NI/自己資本×100
+            'roe': roe_values[i],              # 年率ROE(%) = roeQuarterly×4
+            'roicQuarterly': roic_q,           # 生の四半期ROIC(%)
+            'roic': roic,                      # 年率ROIC(%) = roicQuarterly×4
             # 決算サプライズ（announcement 基準）。earningsDate はバックテストの
             # point-in-time（情報公開日）判定に使える。
             'earningsDate': earnings_date,
