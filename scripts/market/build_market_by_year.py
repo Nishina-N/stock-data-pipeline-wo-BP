@@ -53,6 +53,8 @@ COVERAGE_START = {
     "IEF":      "2004-01",
     "DBC":      "2006-02",
     "DBB":      "2007-01",
+    "USDJPY=X": "1996-10",
+    "JGB10Y":   "1974-09",
 }
 
 
@@ -148,6 +150,7 @@ def main():
             t: {
                 'name': series_meta[t]['name'],
                 'use': series_meta[t]['use'],
+                'source': series_meta[t].get('source', 'yahoo_finance'),
                 'coverage_start': COVERAGE_START.get(t),
                 'actual_first': actual_cov[t]['first'],
                 'actual_last': actual_cov[t]['last'],
@@ -169,6 +172,7 @@ def main():
                 'series': {
                     t: {
                         'name': series_meta[t]['name'], 'use': series_meta[t]['use'],
+                        'source': series_meta[t].get('source', 'yahoo_finance'),
                         'coverage_start': COVERAGE_START.get(t),
                         'actual_first': actual_cov.get(t, {}).get('first'),
                         'actual_last': actual_cov.get(t, {}).get('last'),

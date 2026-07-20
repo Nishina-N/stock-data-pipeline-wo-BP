@@ -209,7 +209,8 @@ def main():
         price_data = pd.read_pickle(TEMP_PRICE_PKL)
         logging.info(f"  loaded shape {price_data.shape}")
     else:
-        yf_symbols = [f"{code}.T" for code in df['Symbol'].tolist()]
+        # ^N225 のような指数コードは '.T' を付けない（common/jp_market_symbols.py 参照）
+        yf_symbols = [code if code.startswith('^') else f"{code}.T" for code in df['Symbol'].tolist()]
         price_data = download_price_data(yf_symbols, args.start, args.end,
                                          chunk_size=args.chunk_size)
         if price_data is None:

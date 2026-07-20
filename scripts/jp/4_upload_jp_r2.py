@@ -54,9 +54,17 @@ def get_existing_files_in_r2(prefix):
 
 
 def extract_year_from_path(file_path):
-    for part in file_path.split('/'):
+    """パスの各ディレクトリ名、無ければファイル名(拡張子抜き)から4桁年を拾う。
+    core/{年}/{code}.json はディレクトリ形式、RS_scores/{sector,industry}/{年}.json は
+    ファイル名形式なので両方に対応する（後者を見落とすと過去年もfreezeされず毎回上書きされる）。
+    """
+    parts = file_path.split('/')
+    for part in parts:
         if part.isdigit() and len(part) == 4:
             return int(part)
+    stem = os.path.splitext(parts[-1])[0]
+    if stem.isdigit() and len(stem) == 4:
+        return int(stem)
     return None
 
 

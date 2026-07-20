@@ -66,8 +66,25 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 | `DBC` | 広義コモディティETF | 2006-02 | 資源業種全般 |
 | `DBB` | 基本金属ETF | 2007-01 | 基本金属 |
 
-> **金利（10y/2y/30y）は含めない**：Yahoo は `^TNX` 等の履歴を現状返さず、2年物の指数も無いため。
+> **米金利（10y/2y/30y）は含めない**：Yahoo は `^TNX` 等の履歴を現状返さず、2年物の指数も無いため。
 > 曲線傾き（10y−2y）等は **FRED（`DGS2`/`DGS10`/…）を別ソースで `market/rates/` に格納する想定**（未実装）。
+
+### JP マクロ（レジーム・為替・金利）
+
+| ティッカー | 内容 | 出典 | 実測開始 | 用途 |
+|---|---|---|---|---|
+| `USDJPY=X` | ドル円 | Yahoo Finance | 1996-10 | 円建て市場の通貨レジーム |
+| `JGB10Y` | 日本国債10年物利回り(%) | 財務省公式CSV（`mof_jgbcm`） | 1986-07 | JP金利レジーム |
+
+- `JGB10Y` は Yahoo に存在しないため財務省「国債金利情報」CSV
+  (`jgbcm_all.csv`、和暦・昭和49年(1974)〜)から取得。10年物の実測開始は1986-07
+  （それ以前は10年物ベンチマーク自体が無い）。利回り(%)を疑似OHLCVとして
+  `open=high=low=close=利回り`、`volume=null` で格納（他シリーズと形式を揃えるため）。
+- `metadata.json` の各シリーズに `source` フィールドを追加（既定 `yahoo_finance`、
+  JGB10Yのみ `mof_jgbcm`）。
+- **日経VI（日経平均ボラティリティー・インデックス）はペンディング**：公式無料提供は
+  直近3年(日次)/10年(月次)のみで、長期日次フル履歴を無料・無認証で取得できるソースが
+  無いため見送り（2026-07時点）。
 
 > 派生指標（VIX/VIX3M比・銅/金比・HYG/IEI比・IWM/SPY比等）は**しきい値チューニング前提のため
 > 保存せず**、raw シリーズのみ格納。計算は利用側。
@@ -77,6 +94,7 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 | スクリプト | 用途 |
 |---|---|
 | `fetch_market_series.py` | Yahoo から取得（auto_adjust）→ `data/temp_market.json`。`--only`/`--start`/`--end`/`--strict`（劣化検知） |
+| `fetch_jp_macro_jgb.py` | 財務省CSVから JGB10Y 取得 → `data/temp_market.json`（他と同じ形式） |
 | `build_market_by_year.py` | 年別統合ファイル + metadata を生成。`--merge`（既存R2に取得ティッカーを重ねる） |
 | `upload_market_to_r2.py` | R2 へアップロード（過去年は不足時のみ／当年上書き／metadata常時、既定 dry-run）。`--force-past`（過去年も上書き） |
 

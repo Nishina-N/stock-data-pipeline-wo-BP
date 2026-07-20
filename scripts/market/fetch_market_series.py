@@ -49,6 +49,8 @@ SERIES = {
     "IEF":      {"name": "7-10Y UST ETF",  "use": "nominal (breakeven pair)"},
     "DBC":      {"name": "Broad Commodity ETF", "use": "commodity_broad"},
     "DBB":      {"name": "Base Metals ETF", "use": "base_metals"},
+    # --- JP マクロ（レジーム/為替） ---
+    "USDJPY=X": {"name": "USD/JPY", "use": "jp_fx_regime"},
 }
 
 
