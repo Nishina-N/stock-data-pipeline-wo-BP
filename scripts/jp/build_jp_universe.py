@@ -30,6 +30,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from common.r2 import create_s3_client
+from common.jp_market_symbols import JP_MARKET_SYMBOLS
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -77,6 +78,26 @@ def build(df):
     return out
 
 
+def inject_market_symbols(df):
+    """
+    TOPIX プロキシ(1306) / 日経225(^N225) を必ず最終CSVに含める（US の
+    inject_market_symbols と同じ規約）。既存に同一シンボルがあれば保証行で上書き。
+    """
+    df = df[~df['Symbol'].isin(JP_MARKET_SYMBOLS)]
+    rows = []
+    for symbol, (name, sector, industry) in JP_MARKET_SYMBOLS.items():
+        rows.append({
+            'Symbol': symbol,
+            'Company Name': name,
+            'Sector': sector,
+            'Industry': industry,
+            'Market': 'INDEX/ETF',
+            'Size': 'N/A',
+            'Exchange': 'TSE' if symbol != '^N225' else 'OSE',
+        })
+    return pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--execute', action='store_true', help='R2(jp/metadata) へアップロード')
@@ -86,6 +107,7 @@ def main():
     logging.info(f"Raw rows: {len(df)}")
 
     uni = build(df)
+    uni = inject_market_symbols(uni)
     os.makedirs(DATA_FOLDER, exist_ok=True)
     uni.to_csv(OUT_CSV, index=False, encoding='utf-8-sig')
 
