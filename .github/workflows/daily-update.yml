@@ -47,7 +47,7 @@ jobs:
       
       - name: 2. Fetch price data (1000 days)
         run: python scripts/daily/2_fetch_price_data.py
-        timeout-minutes: 30
+        timeout-minutes: 60
       
       - name: 2.5. Convert price data to JSON (OHLCV)
         run: python scripts/daily/2.5_add_indicators.py
