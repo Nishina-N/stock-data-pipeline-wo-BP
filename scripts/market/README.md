@@ -66,8 +66,19 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 | `DBC` | 広義コモディティETF | 2006-02 | 資源業種全般 |
 | `DBB` | 基本金属ETF | 2007-01 | 基本金属 |
 
-> **米金利（10y/2y/30y）は含めない**：Yahoo は `^TNX` 等の履歴を現状返さず、2年物の指数も無いため。
-> 曲線傾き（10y−2y）等は **FRED（`DGS2`/`DGS10`/…）を別ソースで `market/rates/` に格納する想定**（未実装）。
+### 米金利（2y/10y/30y）
+
+| ティッカー | 内容 | 出典 | 実測開始 |
+|---|---|---|---|
+| `UST2Y` | 米国債2年利回り(%) | FMP `treasury-rates`（`fmp_treasury_rates`） | 1990-01 |
+| `UST10Y` | 米国債10年利回り(%) | 同上 | 1990-01 |
+| `UST30Y` | 米国債30年利回り(%) | 同上 | 1990-01（発行休止期間はデータ欠落あり） |
+
+- Yahoo (`^TNX`等) は履歴を返さないため対象外だったが、FMP stable に
+  `treasury-rates` エンドポイントがあることを2026-07-21に確認（1990-01-02〜の日次フル履歴）。
+  1リクエスト約60日分の制限があるため `fetch_us_rates.py` で日付範囲を分割取得する
+- JGB10Yと同様、利回り(%)を `open=high=low=close=利回り, volume=null` の疑似OHLCVとして格納
+- 曲線傾き（10y−2y）等の派生指標は他シリーズ同様に保存せず利用側で計算
 
 ### JP マクロ（レジーム・為替・金利）
 
@@ -95,6 +106,7 @@ market/metadata.json        … シリーズ定義・出典・カバレッジ・
 |---|---|
 | `fetch_market_series.py` | Yahoo から取得（auto_adjust）→ `data/temp_market.json`。`--only`/`--start`/`--end`/`--strict`（劣化検知） |
 | `fetch_jp_macro_jgb.py` | 財務省CSVから JGB10Y 取得 → `data/temp_market.json`（他と同じ形式） |
+| `fetch_us_rates.py` | FMP `treasury-rates` から UST2Y/10Y/30Y 取得（日付範囲分割）→ `data/temp_market.json` |
 | `build_market_by_year.py` | 年別統合ファイル + metadata を生成。`--merge`（既存R2に取得ティッカーを重ねる） |
 | `upload_market_to_r2.py` | R2 へアップロード（過去年は不足時のみ／当年上書き／metadata常時、既定 dry-run）。`--force-past`（過去年も上書き） |
 
