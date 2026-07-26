@@ -1,7 +1,7 @@
 """
 fetch_jp_macro_jgb.py
 
-JGB（日本国債）10年物金利を財務省公式CSVから取得する。
+JGB（日本国債）2年・10年物金利を財務省公式CSVから取得する。
 Yahoo Finance には日本国債の利回りシリーズが存在しないため、別ソース（MOF）を使う
 （US の 10y/2y と同じ理由で Yahoo 対象外。README 参照）。
 
@@ -12,7 +12,7 @@ Yahoo Finance には日本国債の利回りシリーズが存在しないため
 
 fetch_market_series.py と同じ temp_market.json 形式で出力するため、
 build_market_by_year.py --merge にそのまま渡せる（利回りを疑似OHLCVとして
-open=high=low=close=利回り、volume=null で格納。ティッカーキーは "JGB10Y"）。
+open=high=low=close=利回り、volume=null で格納。ティッカーキーは "JGB2Y"/"JGB10Y"）。
 
 使い方:
   python scripts/market/fetch_jp_macro_jgb.py
@@ -33,9 +33,15 @@ DATA_FOLDER = "data"
 OUT_JSON = os.path.join(DATA_FOLDER, "temp_market.json")
 
 MOF_URL = "https://www.mof.go.jp/jgbs/reference/interest_rate/data/jgbcm_all.csv"
-TICKER = "JGB10Y"
+
+# CSVの列名 -> このパイプラインのティッカーキー
+COLUMN_TO_TICKER = {
+    '2年':  'JGB2Y',
+    '10年': 'JGB10Y',
+}
 SERIES_META = {
-    TICKER: {"name": "JGB 10Y Yield", "use": "jp_rate_regime", "source": "mof_jgbcm"},
+    'JGB2Y':  {"name": "JGB 2Y Yield",  "use": "jp_rate_regime", "source": "mof_jgbcm"},
+    'JGB10Y': {"name": "JGB 10Y Yield", "use": "jp_rate_regime", "source": "mof_jgbcm"},
 }
 
 ERA_OFFSET = {'S': 1925, 'H': 1988, 'R': 2018}  # 和暦年 + offset = 西暦
@@ -59,44 +65,51 @@ def download_mof_csv():
     return text
 
 
-def parse_10y(text):
+def parse_yields(text):
     lines = text.splitlines()
     # 1行目=タイトル, 2行目=ヘッダ（基準日,1年,2年,...,10年,...）
     header = lines[1].split(',')
-    idx_10y = header.index('10年')
+    idx_by_ticker = {ticker: header.index(col) for col, ticker in COLUMN_TO_TICKER.items()}
 
-    rows = {}
+    rows = {ticker: {} for ticker in COLUMN_TO_TICKER.values()}
     for line in lines[2:]:
         if not line.strip():
             continue
         parts = line.split(',')
-        if len(parts) <= idx_10y:
-            continue
-        raw_val = parts[idx_10y].strip()
-        if raw_val in ('', '-'):
-            continue
-        try:
-            date = era_to_gregorian(parts[0].strip())
-            val = float(raw_val)
-        except (ValueError, IndexError, KeyError):
-            continue
-        rows[date] = {'open': val, 'high': val, 'low': val, 'close': val, 'volume': None}
+        date = None
+        for ticker, idx in idx_by_ticker.items():
+            if len(parts) <= idx:
+                continue
+            raw_val = parts[idx].strip()
+            if raw_val in ('', '-'):
+                continue
+            try:
+                if date is None:
+                    date = era_to_gregorian(parts[0].strip())
+                val = float(raw_val)
+            except (ValueError, IndexError, KeyError):
+                continue
+            rows[ticker][date] = {'open': val, 'high': val, 'low': val, 'close': val, 'volume': None}
     return rows
 
 
 def main():
     text = download_mof_csv()
-    rows = parse_10y(text)
-    if not rows:
-        logging.error("No JGB10Y rows parsed")
+    rows = parse_yields(text)
+    if not any(rows.values()):
+        logging.error("No JGB rows parsed")
         return False
 
-    dates = sorted(rows.keys())
-    logging.info(f"✓ {TICKER:8} {len(rows):5} rows  {dates[0]}..{dates[-1]}")
+    for ticker, r in rows.items():
+        if r:
+            dates = sorted(r.keys())
+            logging.info(f"✓ {ticker:8} {len(r):5} rows  {dates[0]}..{dates[-1]}")
+        else:
+            logging.warning(f"✗ {ticker:8} no data")
 
     os.makedirs(DATA_FOLDER, exist_ok=True)
     with open(OUT_JSON, 'w') as f:
-        json.dump({'series': SERIES_META, 'data': {TICKER: rows}}, f)
+        json.dump({'series': SERIES_META, 'data': rows}, f)
     logging.info(f"✅ Saved {OUT_JSON}")
     return True
 
