@@ -39,6 +39,9 @@ MARKET_SYMBOLS = {
     'TMV':   ('Direxion Daily 20+ Year Treasury Bear 3X Shares', 'N/A', 'N/A'),
     'GLD':   ('SPDR Gold Shares', 'N/A', 'N/A'),
     'TECL':  ('Direxion Daily Technology Bull 3X Shares', 'N/A', 'N/A'),
+    'TQQQ':  ('ProShares UltraPro QQQ', 'N/A', 'N/A'),
+    'SPXL':  ('Direxion Daily S&P 500 Bull 3X Shares', 'N/A', 'N/A'),
+    'SOXL':  ('Direxion Daily Semiconductor Bull 3X Shares', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
