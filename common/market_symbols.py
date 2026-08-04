@@ -34,6 +34,11 @@ MARKET_SYMBOLS = {
     'XLB':   ('Materials Select Sector SPDR', 'N/A', 'N/A'),
     'XLRE':  ('Real Estate Select Sector SPDR', 'N/A', 'N/A'),
     'XLC':   ('Communication Services Select Sector SPDR', 'N/A', 'N/A'),
+    # レバレッジ/コモディティETF
+    'TMF':   ('Direxion Daily 20+ Year Treasury Bull 3X Shares', 'N/A', 'N/A'),
+    'TMV':   ('Direxion Daily 20+ Year Treasury Bear 3X Shares', 'N/A', 'N/A'),
+    'GLD':   ('SPDR Gold Shares', 'N/A', 'N/A'),
+    'TECL':  ('Direxion Daily Technology Bull 3X Shares', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
