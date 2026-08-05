@@ -42,6 +42,9 @@ MARKET_SYMBOLS = {
     'TQQQ':  ('ProShares UltraPro QQQ', 'N/A', 'N/A'),
     'SPXL':  ('Direxion Daily S&P 500 Bull 3X Shares', 'N/A', 'N/A'),
     'SOXL':  ('Direxion Daily Semiconductor Bull 3X Shares', 'N/A', 'N/A'),
+    'SPXS':  ('Direxion Daily S&P 500 Bear 3X Shares', 'N/A', 'N/A'),
+    'SQQQ':  ('ProShares UltraPro Short QQQ', 'N/A', 'N/A'),
+    'SOXS':  ('Direxion Daily Semiconductor Bear 3X Shares', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
