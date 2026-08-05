@@ -34,6 +34,19 @@ MARKET_SYMBOLS = {
     'XLB':   ('Materials Select Sector SPDR', 'N/A', 'N/A'),
     'XLRE':  ('Real Estate Select Sector SPDR', 'N/A', 'N/A'),
     'XLC':   ('Communication Services Select Sector SPDR', 'N/A', 'N/A'),
+    # レバレッジ/コモディティETF
+    'TMF':   ('Direxion Daily 20+ Year Treasury Bull 3X Shares', 'N/A', 'N/A'),
+    'TMV':   ('Direxion Daily 20+ Year Treasury Bear 3X Shares', 'N/A', 'N/A'),
+    'GLD':   ('SPDR Gold Shares', 'N/A', 'N/A'),
+    'TECL':  ('Direxion Daily Technology Bull 3X Shares', 'N/A', 'N/A'),
+    'TQQQ':  ('ProShares UltraPro QQQ', 'N/A', 'N/A'),
+    'SPXL':  ('Direxion Daily S&P 500 Bull 3X Shares', 'N/A', 'N/A'),
+    'SOXL':  ('Direxion Daily Semiconductor Bull 3X Shares', 'N/A', 'N/A'),
+    'SPXS':  ('Direxion Daily S&P 500 Bear 3X Shares', 'N/A', 'N/A'),
+    'SQQQ':  ('ProShares UltraPro Short QQQ', 'N/A', 'N/A'),
+    'SOXS':  ('Direxion Daily Semiconductor Bear 3X Shares', 'N/A', 'N/A'),
+    'TNA':   ('Direxion Daily Small Cap Bull 3X Shares', 'N/A', 'N/A'),
+    'TZA':   ('Direxion Daily Small Cap Bear 3X Shares', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
