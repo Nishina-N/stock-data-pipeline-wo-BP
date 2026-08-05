@@ -45,6 +45,8 @@ MARKET_SYMBOLS = {
     'SPXS':  ('Direxion Daily S&P 500 Bear 3X Shares', 'N/A', 'N/A'),
     'SQQQ':  ('ProShares UltraPro Short QQQ', 'N/A', 'N/A'),
     'SOXS':  ('Direxion Daily Semiconductor Bear 3X Shares', 'N/A', 'N/A'),
+    'TNA':   ('Direxion Daily Small Cap Bull 3X Shares', 'N/A', 'N/A'),
+    'TZA':   ('Direxion Daily Small Cap Bear 3X Shares', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
