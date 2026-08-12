@@ -18,10 +18,15 @@ def load_symbols_info(csv_path):
     symbols_info = {}
     for _, row in df.iterrows():
         symbol = row['Symbol']
+        sector = row.get('Sector', 'N/A')
+        industry = row.get('Industry', 'N/A')
         symbols_info[symbol] = {
             'name': row.get('Company Name', symbol),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A')
+            # 空欄セルは NaN(float) になるため 'N/A' に正規化
+            # （NaN は Python では truthy かつ 'N/A' と非等価のため、
+            #   下流のグループ除外フィルタを素通りしてしまう）
+            'sector': sector if pd.notna(sector) else 'N/A',
+            'industry': industry if pd.notna(industry) else 'N/A',
         }
 
     logging.info(f"Loaded info for {len(symbols_info)} symbols")

@@ -87,7 +87,7 @@ def calculate_group_rs_weighted(rs_df, symbols_info, price_data, group_key):
         if symbol not in symbols_info:
             continue
         group = symbols_info[symbol][group_key]
-        if group and group != 'N/A':
+        if group and pd.notna(group) and group != 'N/A':
             group_symbols.setdefault(group, []).append(symbol)
 
     # 重み（最新日の Close × Volume）

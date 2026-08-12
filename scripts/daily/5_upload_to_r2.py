@@ -4,6 +4,8 @@
 R2へのアップロード（list_objects使用で高速化）
 """
 import os
+import json
+import argparse
 import boto3
 import logging
 from datetime import datetime
@@ -63,6 +65,12 @@ def extract_year_from_path(file_path):
     for part in parts:
         if part.isdigit() and len(part) == 4:
             return int(part)
+    # scores/RS_scores/{sector,industry}/{年}.json のようにディレクトリ名でなく
+    # ファイル名にのみ年が現れるケースを拾う（これを見落とすと year is None 扱いになり、
+    # 過去年ファイルが year-freeze の対象外＝常に上書きされてしまう）
+    stem = os.path.splitext(parts[-1])[0]
+    if stem.isdigit() and len(stem) == 4:
+        return int(stem)
     return None
 
 def upload_single_file(endpoint, access_key, secret_key, bucket_name, file_path, key, max_retries=3):
@@ -89,7 +97,33 @@ def upload_single_file(endpoint, access_key, secret_key, bucket_name, file_path,
         if s3_client:
             s3_client.close()
 
-def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_type='year', target_date=None):
+def record_count(obj):
+    """JSONオブジェクトのレコード件数を数える（減少検知用）。
+    scores/*.json は配列、core/*.json は {'data': [...]} 形式。判定不能なら None。"""
+    if isinstance(obj, list):
+        return len(obj)
+    if isinstance(obj, dict) and isinstance(obj.get('data'), list):
+        return len(obj['data'])
+    return None
+
+def is_record_count_shrinking(s3_client, bucket, local_path, s3_key):
+    """既存R2オブジェクトよりローカルの新データの件数が減っていないか確認。
+    件数判定できない場合は安全側（shrink無し扱い）で通す。"""
+    try:
+        existing_obj = s3_client.get_object(Bucket=bucket, Key=s3_key)
+        existing_count = record_count(json.loads(existing_obj['Body'].read()))
+    except Exception:
+        return False, None, None
+
+    with open(local_path, 'r', encoding='utf-8') as f:
+        new_count = record_count(json.load(f))
+
+    if existing_count is None or new_count is None:
+        return False, existing_count, new_count
+    return new_count < existing_count, existing_count, new_count
+
+def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_type='year',
+                               target_date=None, force_past=False):
     if not os.path.exists(local_dir):
         logging.warning(f"Directory not found: {local_dir}")
         return 0
@@ -130,15 +164,35 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
         if past_year_files:
             logging.info(f"Checking {len(past_year_files)} past year files in R2...")
             existing_keys = get_existing_files_in_r2(s3_prefix)
-            
+
             missing_count = 0
+            shrink_blocked = []
             for local_path, s3_key in past_year_files:
                 if s3_key not in existing_keys:
                     current_year_files.append((local_path, s3_key))
                     missing_count += 1
-            
+                elif force_past:
+                    # 過去年ファイルの強制上書き（手動リカバリ用途）。
+                    # 既存よりレコード件数が減る場合は事故防止のためアップロードしない。
+                    s3_check = create_s3_client()
+                    try:
+                        shrinking, old_n, new_n = is_record_count_shrinking(
+                            s3_check, R2_BUCKET_NAME, local_path, s3_key)
+                    finally:
+                        s3_check.close()
+                    if shrinking:
+                        shrink_blocked.append((s3_key, old_n, new_n))
+                        logging.error(
+                            f"  🛑 SKIP (record count shrink): {s3_key} {old_n} -> {new_n}")
+                        continue
+                    current_year_files.append((local_path, s3_key))
+
             logging.info(f"Found {len(past_year_files) - missing_count} existing, {missing_count} missing")
-        
+            if shrink_blocked:
+                logging.error(
+                    f"🛑 {len(shrink_blocked)} past-year file(s) blocked due to record count shrink: "
+                    f"{shrink_blocked}")
+
         files_to_upload = current_year_files
     
     if not files_to_upload:
@@ -182,24 +236,33 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
     return success_count
 
 def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--force-past', action='store_true',
+                     help='過去年ファイルも既存と照合の上で上書き対象にする（手動リカバリ用途、既定は凍結）')
+    args = ap.parse_args()
+
     logging.info("="*60)
     logging.info("UPLOAD TO R2 (PARALLEL + LIST-BASED FILTERING)")
     logging.info(f"Current Year: {CURRENT_YEAR} (force overwrite)")
+    if args.force_past:
+        logging.info("force_past=True: 過去年ファイルもレコード件数減少チェック付きで上書き対象")
     logging.info("="*60)
-    
+
     if not all([R2_ENDPOINT, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_BUCKET_NAME]):
         logging.error("R2 credentials not found in .env")
         return False
-    
+
     total_uploaded = 0
 
     logging.info("\n[1/3] Uploading stocks/daily/core...")
     core_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
-    total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year')
+    total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year',
+                                                 force_past=args.force_past)
 
     logging.info("\n[2/3] Uploading scores...")
     scores_dir = os.path.join(R2_OUTPUT, "scores")
-    total_uploaded += upload_directory_parallel(scores_dir, "scores", filter_type='year')
+    total_uploaded += upload_directory_parallel(scores_dir, "scores", filter_type='year',
+                                                 force_past=args.force_past)
 
     logging.info("\n[3/3] Uploading metadata...")
     metadata_dir = os.path.join(R2_OUTPUT, "metadata")
