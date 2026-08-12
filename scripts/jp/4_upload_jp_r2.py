@@ -16,6 +16,7 @@ US の 5_upload_to_r2.py と同じ「過去年は凍結・当年は上書き」�
 """
 import os
 import sys
+import json
 import argparse
 import logging
 from datetime import datetime
@@ -96,6 +97,28 @@ def upload_single_file(file_path, key, max_retries=3):
         s3.close()
 
 
+def record_count(obj):
+    """レコード件数（scores=配列、core={'data':[...]}）。判定不能なら None"""
+    if isinstance(obj, list):
+        return len(obj)
+    if isinstance(obj, dict) and isinstance(obj.get('data'), list):
+        return len(obj['data'])
+    return None
+
+
+def is_record_count_shrinking(s3, local_path, s3_key):
+    """--force-past 上書き時、既存R2より件数が減っていないか（US 5_upload_to_r2.py と同じ安全弁）"""
+    try:
+        existing = record_count(json.loads(s3.get_object(Bucket=R2_BUCKET_NAME, Key=s3_key)['Body'].read()))
+    except Exception:
+        return False, None, None
+    with open(local_path, 'r', encoding='utf-8') as f:
+        new = record_count(json.load(f))
+    if existing is None or new is None:
+        return False, existing, new
+    return new < existing, existing, new
+
+
 def plan_uploads(local_dir, s3_prefix, filter_type, force_past):
     all_files = collect_files(local_dir)
     if not all_files:
@@ -115,8 +138,21 @@ def plan_uploads(local_dir, s3_prefix, filter_type, force_past):
 
     if past_files:
         if force_past:
-            to_upload.extend(past_files)
-            logging.info(f"--force-past: {len(past_files)} 過去年ファイルも上書き対象")
+            # 過去年強制上書きは既存より件数が減るファイルをブロック（事故防止）
+            s3 = create_s3_client()
+            blocked = 0
+            try:
+                for lp, k in past_files:
+                    shrinking, old_n, new_n = is_record_count_shrinking(s3, lp, k)
+                    if shrinking:
+                        blocked += 1
+                        logging.error(f"  🛑 SKIP (record count shrink): {k} {old_n} -> {new_n}")
+                    else:
+                        to_upload.append((lp, k))
+            finally:
+                s3.close()
+            logging.info(f"--force-past: {len(past_files) - blocked} 過去年ファイル上書き対象"
+                         + (f" / {blocked} 件を件数減少でブロック" if blocked else ""))
         else:
             existing = get_existing_files_in_r2(s3_prefix)
             missing = [(lp, k) for lp, k in past_files if k not in existing]

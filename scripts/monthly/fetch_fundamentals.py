@@ -42,6 +42,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import time
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+from common.market_symbols import CORE_ETFS
 
 load_dotenv()
 
@@ -428,8 +432,9 @@ def main():
 
     symbols = load_target_stocks()
 
-    # Core ETFs typically don't have standard fundamentals, so exclude them
-    CORE_ETFS = ['DIA', 'SPY', 'SOXX', 'IWM', 'QQQ', '^GSPC']
+    # 指数/ETF等の保証銘柄はファンダメンタルズを持たないため除外
+    # （ローカルのハードコードだと common/market_symbols.py への追加に追随できず
+    #   除外漏れが増えるため、単一の真実の情報源 CORE_ETFS を参照する）
     symbols = [s for s in symbols if s not in CORE_ETFS]
 
     if args.limit:
