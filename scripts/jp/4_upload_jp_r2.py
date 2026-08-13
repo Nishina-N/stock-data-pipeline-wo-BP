@@ -39,6 +39,8 @@ CURRENT_YEAR = datetime.now().year
 
 
 def get_existing_files_in_r2(prefix):
+    """listing 失敗時は例外を送出（空 set を返すと過去年が全て『新規』扱いになり
+    year-freeze が全面バイパスされるため。listing 成功が過去年判定の前提条件）"""
     s3 = create_s3_client()
     keys = set()
     try:
@@ -47,8 +49,6 @@ def get_existing_files_in_r2(prefix):
             for obj in page.get('Contents', []):
                 keys.add(obj['Key'])
         logging.info(f"Found {len(keys)} existing files in R2 under '{prefix}'")
-    except Exception as e:
-        logging.error(f"Error listing R2 objects: {e}")
     finally:
         s3.close()
     return keys
@@ -107,10 +107,11 @@ def record_count(obj):
 
 
 def is_record_count_shrinking(s3, local_path, s3_key):
-    """--force-past 上書き時、既存R2より件数が減っていないか（US 5_upload_to_r2.py と同じ安全弁）"""
+    """--force-past 上書き時、既存R2より件数が減っていないか（US 5_upload_to_r2.py と同じ安全弁）。
+    既存なし(NoSuchKey)のみ比較スキップ。チェック不能（ネットワーク障害等）は例外を送出"""
     try:
         existing = record_count(json.loads(s3.get_object(Bucket=R2_BUCKET_NAME, Key=s3_key)['Body'].read()))
-    except Exception:
+    except s3.exceptions.NoSuchKey:
         return False, None, None
     with open(local_path, 'r', encoding='utf-8') as f:
         new = record_count(json.load(f))
@@ -162,20 +163,21 @@ def plan_uploads(local_dir, s3_prefix, filter_type, force_past):
 
 
 def run(local_dir, s3_prefix, filter_type, execute, force_past):
+    """(uploaded_count, fail_count) を返す。fail>0 は呼び出し側で失敗扱いにすること"""
     if not os.path.exists(local_dir):
         logging.warning(f"Directory not found: {local_dir}")
-        return 0
+        return 0, 0
 
     files = plan_uploads(local_dir, s3_prefix, filter_type, force_past)
     if not files:
         logging.info(f"No files to upload in {local_dir}")
-        return 0
+        return 0, 0
 
     if not execute:
         logging.info(f"[DRY-RUN] {len(files)} files would upload from {local_dir}")
         for _, k in files[:5]:
             logging.info(f"    e.g. {k}")
-        return len(files)
+        return len(files), 0
 
     logging.info(f"Uploading {len(files)} files from {local_dir} ({MAX_WORKERS} workers)...")
     ok = fail = 0
@@ -195,7 +197,7 @@ def run(local_dir, s3_prefix, filter_type, execute, force_past):
                 fail += 1
                 logging.error(f"Error uploading {k}: {e}")
     logging.info(f"✅ Uploaded {ok}, ❌ Failed {fail}")
-    return ok
+    return ok, fail
 
 
 def main():
@@ -213,25 +215,41 @@ def main():
     logging.info(f"UPLOAD JP TO R2  [{mode}]  current_year={CURRENT_YEAR}")
     logging.info("=" * 60)
 
-    total = 0
-    logging.info("\n[1/3] jp/stocks/daily/core ...")
-    total += run(os.path.join(R2_OUTPUT, "jp", "stocks", "daily", "core"),
-                 "jp/stocks/daily/core", 'year', args.execute, args.force_past)
+    total = failed = 0
+    try:
+        logging.info("\n[1/3] jp/stocks/daily/core ...")
+        ok, ng = run(os.path.join(R2_OUTPUT, "jp", "stocks", "daily", "core"),
+                     "jp/stocks/daily/core", 'year', args.execute, args.force_past)
+        total += ok
+        failed += ng
 
-    logging.info("\n[2/3] jp/scores ...")
-    total += run(os.path.join(R2_OUTPUT, "jp", "scores"),
-                 "jp/scores", 'year', args.execute, args.force_past)
+        logging.info("\n[2/3] jp/scores ...")
+        ok, ng = run(os.path.join(R2_OUTPUT, "jp", "scores"),
+                     "jp/scores", 'year', args.execute, args.force_past)
+        total += ok
+        failed += ng
 
-    logging.info("\n[3/3] jp/metadata ...")
-    total += run(os.path.join(R2_OUTPUT, "jp", "metadata"),
-                 "jp/metadata", 'always', args.execute, args.force_past)
+        logging.info("\n[3/3] jp/metadata ...")
+        ok, ng = run(os.path.join(R2_OUTPUT, "jp", "metadata"),
+                     "jp/metadata", 'always', args.execute, args.force_past)
+        total += ok
+        failed += ng
+    except Exception as e:
+        # listing 失敗など。年凍結判定の前提が崩れているため中断（劣化上書き防止）
+        logging.error(f"🛑 Upload aborted: {e}")
+        return False
 
     logging.info("=" * 60)
     verb = "uploaded" if args.execute else "would upload"
-    logging.info(f"✅ {verb}: {total} files total")
+    logging.info(f"✅ {verb}: {total} files total" + (f", ❌ {failed} failed" if failed else ""))
     if not args.execute:
         logging.info("実投入は --execute を付けてください")
     logging.info("=" * 60)
+
+    if failed > 0:
+        # 部分アップロードを成功として扱わない（CI を緑にしない）
+        logging.error(f"🛑 {failed} file(s) failed to upload — exiting with error")
+        return False
     return True
 
 

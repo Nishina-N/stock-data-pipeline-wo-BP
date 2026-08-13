@@ -38,6 +38,10 @@ TEMP_PRICE_PKL = os.path.join(DATA_FOLDER, "temp_prices_jp.pkl")
 
 DEFAULT_START = "2004-01-01"
 
+# 失敗銘柄がこの割合を超えたら全体を失敗させる（USの2_fetch_price_data.pyと同じ安全弁）。
+# RS はクロスセクション percentile なので母集団が縮むと全銘柄の値が歪む。
+MAX_FAILED_RATIO = 0.02
+
 
 def load_jp_universe(csv_path=JP_CSV):
     """JP ユニバース CSV を読み込む。Symbol は英数字コードのため必ず文字列で扱う。"""
@@ -92,6 +96,9 @@ def download_price_data(yf_symbols, start_date, end_date=None,
                     success = True
                     break
                 logging.warning(f"  ⚠ chunk {chunk_num} returned empty")
+                # レート制限は空応答で現れることが多いためリトライ前に待つ
+                if retry < max_retries - 1:
+                    time.sleep(delay * 2)
             except Exception as e:
                 logging.error(f"  ✗ chunk {chunk_num} error (retry {retry + 1}): {e}")
                 if retry < max_retries - 1:
@@ -105,6 +112,14 @@ def download_price_data(yf_symbols, start_date, end_date=None,
         logging.warning(f"⚠ {len(failed)} symbols failed")
         with open(os.path.join(DATA_FOLDER, 'failed_symbols_jp.txt'), 'w', encoding='utf-8') as f:
             f.write('\n'.join(failed))
+
+    # 大量失敗ゲート: 縮んだ母集団で RS を計算・上書きしない
+    failed_ratio = len(failed) / len(yf_symbols)
+    if failed_ratio > MAX_FAILED_RATIO:
+        logging.error(f"🛑 {len(failed)}/{len(yf_symbols)} symbols failed "
+                      f"({failed_ratio:.1%} > {MAX_FAILED_RATIO:.0%}) — aborting to avoid "
+                      f"degraded cross-sectional RS")
+        return None
 
     if not all_data:
         logging.error("No data downloaded!")
