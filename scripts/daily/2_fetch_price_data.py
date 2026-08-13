@@ -52,6 +52,14 @@ def download_price_data(symbols, start_date, end_date=None, chunk_size=50, delay
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
 
+    # yfinance の end は排他（end に指定した日の足は含まれない）。
+    # end_date をそのまま渡すと最新営業日が必ず1日ぶん落ちるため、翌日を渡して
+    # end_date 当日を含める。日次ワークフローは 22:00 UTC = 18:00 ET（米国市場の
+    # 引け後）に走るため、当日の足は確定済み。
+    # 注: 取引時間中にローカル実行すると当日の未確定バーを取り込む点に注意。
+    end_exclusive = (datetime.strptime(end_date, '%Y-%m-%d')
+                     + timedelta(days=1)).strftime('%Y-%m-%d')
+
     logging.info(f"\n{'='*60}")
     logging.info("DOWNLOADING PRICE DATA")
     logging.info(f"{'='*60}")
@@ -74,9 +82,11 @@ def download_price_data(symbols, start_date, end_date=None, chunk_size=50, delay
                 logging.info(f"Chunk {chunk_num}/{total_chunks} ({len(chunk)} symbols, retry {retry + 1})...")
                 
                 data = yf.download(
-                    chunk, 
+                    chunk,
                     start=start_date,
-                    end=end_date,
+                    end=end_exclusive,
+                    auto_adjust=True,   # 既定値に依存しない（将来の既定変更で
+                                        # 調整済み/未調整が黙って入れ替わるのを防ぐ）
                     threads=False,
                     progress=False
                 )

@@ -23,7 +23,7 @@ import json
 import time
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -63,6 +63,13 @@ def download_price_data(yf_symbols, start_date, end_date=None,
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
 
+    # yfinance の end は排他（end に指定した日の足は含まれない）。
+    # end_date をそのまま渡すと最新営業日が必ず1日ぶん落ちるため、翌日を渡して
+    # end_date 当日を含める（--end 指定時も指定日を含む挙動に統一）。
+    # JP 日次ワークフローは 09:00 UTC = 18:00 JST（東証15:00引け後）なので確定済み。
+    end_exclusive = (datetime.strptime(end_date, '%Y-%m-%d')
+                     + timedelta(days=1)).strftime('%Y-%m-%d')
+
     logging.info("=" * 60)
     logging.info("DOWNLOADING JP PRICE DATA")
     logging.info(f"  symbols={len(yf_symbols)}  period={start_date}..{end_date}")
@@ -84,7 +91,7 @@ def download_price_data(yf_symbols, start_date, end_date=None,
                 data = yf.download(
                     chunk,
                     start=start_date,
-                    end=end_date,
+                    end=end_exclusive,
                     auto_adjust=True,
                     threads=False,
                     progress=False,
