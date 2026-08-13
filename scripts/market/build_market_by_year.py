@@ -150,6 +150,9 @@ def main():
                 actual_cov[ticker] = {'first': None, 'last': None, 'rows': 0}
 
         # metadata（merge時は既存にマージ、そうでなければ全生成）
+        # rows=0 のティッカー（取得失敗）は metadata 更新から除外する。
+        # データ本体は setdefault マージで保全されるが、ここで含めると
+        # actual_first/last/rows が None/0 で既存の正しい値を上書きしてしまう
         new_series_entries = {
             t: {
                 'name': series_meta[t]['name'],
@@ -161,7 +164,11 @@ def main():
                 'rows': actual_cov[t]['rows'],
             }
             for t in fetched
+            if actual_cov[t]['rows'] > 0
         }
+        skipped = [t for t in fetched if actual_cov[t]['rows'] == 0]
+        if skipped:
+            logging.warning(f"⚠ metadata update skipped for empty series: {skipped}")
         if args.merge:
             meta = load_existing_metadata(s3, bucket) or {
                 'source': 'yahoo_finance', 'adjust': 'auto', 'years': [], 'series': {}
