@@ -103,20 +103,19 @@ def calculate_group_rs_weighted(rs_df, symbols_info, price_data, group_key):
                 weight = close_price * volume
         weights[symbol] = weight
 
+    # ベクトル化計算（scripts/jp/2_calculate_jp_rs.py の calc_group_percentile と同型）。
+    # 意味論は旧実装（日付×銘柄の二重ループ）と同一:
+    #   numer = Σ_{s∈g, rs非NaN} rs[date,s] * w[s]   （NaN*w=NaN は sum(skipna) で除外）
+    #   denom = Σ_{s∈g, rs非NaN} w[s]
+    #   denom==0 → NaN
+    w = pd.Series({s: weights.get(s, 1) for s in rs_df.columns})
     group_rs_dict = {}
     for group, symbols in group_symbols.items():
-        values = []
-        for date in rs_df.index:
-            weighted_sum = 0
-            total_weight = 0
-            for symbol in symbols:
-                rs_value = rs_df.loc[date, symbol]
-                if not pd.isna(rs_value):
-                    w = weights.get(symbol, 1)
-                    weighted_sum += rs_value * w
-                    total_weight += w
-            values.append(weighted_sum / total_weight if total_weight > 0 else np.nan)
-        group_rs_dict[group] = pd.Series(values, index=rs_df.index)
+        sub = rs_df[symbols]
+        wg = w[symbols]
+        numer = sub.multiply(wg, axis=1).sum(axis=1)
+        denom = sub.notna().multiply(wg, axis=1).sum(axis=1)
+        group_rs_dict[group] = numer / denom.replace(0, np.nan)
 
     group_rs_df = pd.DataFrame(group_rs_dict)
     logging.info(f"Calculated {group_key} RS (raw) for {len(group_rs_df.columns)} groups")
@@ -126,22 +125,38 @@ def save_individual_rs(rs_percentile, symbols_info, output_days=500):
     """Individual RS を保存（percentile のみ）"""
     rs_recent = rs_percentile.tail(output_days)
 
+    # rank をベクトル化: 「自分より大きい値の個数 + 1」は
+    # rank(ascending=False, method='min') とタイ処理含め完全一致
+    rank_df = rs_recent.rank(axis=1, ascending=False, method='min')
+
+    # メタデータをループ外で確定（レコード毎の dict 引き直しを避ける）
+    meta = {
+        s: (symbols_info.get(s, {}).get('name', s),
+            symbols_info.get(s, {}).get('sector', 'N/A'),
+            symbols_info.get(s, {}).get('industry', 'N/A'))
+        for s in rs_recent.columns
+    }
+
     output = []
-    for date in rs_recent.index:
-        values_at_date = rs_recent.loc[date].dropna()
-        for symbol in rs_recent.columns:
-            rs_value = rs_recent.loc[date, symbol]
-            if pd.isna(rs_value):
+    columns = rs_recent.columns
+    for date, row in rs_recent.iterrows():
+        date_str = pd.Timestamp(date).strftime('%Y-%m-%d')
+        rank_row = rank_df.loc[date]
+        vals = row.to_numpy()
+        ranks = rank_row.to_numpy()
+        for i, symbol in enumerate(columns):
+            rs_value = vals[i]
+            if rs_value != rs_value:  # NaN
                 continue
-            rank = int((values_at_date > rs_value).sum() + 1)
+            name, sector, industry = meta[symbol]
             output.append({
-                'date': pd.Timestamp(date).strftime('%Y-%m-%d'),
+                'date': date_str,
                 'ticker': symbol,
-                'name': symbols_info.get(symbol, {}).get('name', symbol),
-                'sector': symbols_info.get(symbol, {}).get('sector', 'N/A'),
-                'industry': symbols_info.get(symbol, {}).get('industry', 'N/A'),
+                'name': name,
+                'sector': sector,
+                'industry': industry,
                 'rs_percentile': round(float(rs_value), 2),
-                'rank': rank
+                'rank': int(ranks[i])
             })
 
     with open(TEMP_RS_INDIVIDUAL_JSON, 'w') as f:
@@ -152,33 +167,45 @@ def save_group_rs(group_rs_percentile, symbols_info, group_key, out_path, output
     """Sector / Industry RS を保存（percentile のみ）"""
     recent = group_rs_percentile.tail(output_days)
 
-    output = []
-    for date in recent.index:
-        values_at_date = recent.loc[date].dropna()
-        for group in recent.columns:
-            rs_value = recent.loc[date, group]
-            if pd.isna(rs_value):
-                continue
-            rank = int((values_at_date > rs_value).sum() + 1)
-            stock_count = sum(1 for info in symbols_info.values() if info.get(group_key) == group)
+    # rank をベクトル化（save_individual_rs と同じ同値変換）
+    rank_df = recent.rank(axis=1, ascending=False, method='min')
 
+    # stock_count / industry→sector 対応をループ外で一度だけ構築
+    # （旧実装はレコード毎に全 symbols_info を走査していた。値は同一）
+    stock_count = {}
+    for info in symbols_info.values():
+        g = info.get(group_key)
+        if g is not None:
+            stock_count[g] = stock_count.get(g, 0) + 1
+
+    sector_of_industry = {}
+    if group_key == 'industry':
+        # 旧実装の「最初に見つかった sector」と同じ選定（挿入順で最初を保持）
+        for info in symbols_info.values():
+            ind = info.get('industry')
+            if ind is not None and ind not in sector_of_industry:
+                sector_of_industry[ind] = info.get('sector', 'N/A')
+
+    output = []
+    columns = recent.columns
+    for date, row in recent.iterrows():
+        date_str = pd.Timestamp(date).strftime('%Y-%m-%d')
+        rank_row = rank_df.loc[date]
+        vals = row.to_numpy()
+        ranks = rank_row.to_numpy()
+        for i, group in enumerate(columns):
+            rs_value = vals[i]
+            if rs_value != rs_value:  # NaN
+                continue
             record = {
-                'date': pd.Timestamp(date).strftime('%Y-%m-%d'),
+                'date': date_str,
                 group_key: group,
                 'rs_percentile': round(float(rs_value), 2),
-                'rank': rank,
-                'stock_count': stock_count
+                'rank': int(ranks[i]),
+                'stock_count': stock_count.get(group, 0)
             }
-
             if group_key == 'industry':
-                # 業種が属するセクターを付与
-                sector = 'N/A'
-                for info in symbols_info.values():
-                    if info.get('industry') == group:
-                        sector = info.get('sector', 'N/A')
-                        break
-                record['sector'] = sector
-
+                record['sector'] = sector_of_industry.get(group, 'N/A')
             output.append(record)
 
     with open(out_path, 'w') as f:
