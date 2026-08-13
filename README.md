@@ -1,376 +1,163 @@
 # Stock Data Pipeline
 
-株式データの収集、テクニカル指標計算、RS/RRS スコア算出、Cloudflare R2 へのアップロードを自動化するパイプライン。
+米国株・日本株の価格/RS/ファンダメンタルズ/マクロ系列を取得し、Cloudflare R2 に年別 JSON で格納するパイプライン。
 
-2026/05/15:稼働中
+役割は **R2 への生データ取得のみ**。合成指数や派生指標（テクニカル指標等）はパイプライン側では作らない（利用側で OHLCV から再計算する方針）。
 
 ---
 
-## 📋 概要
+## 📋 パイプライン一覧
 
-このパイプラインは以下の処理を実行します：
+| パイプライン | ワークフロー | スケジュール | 内容 |
+|---|---|---|---|
+| US Daily | `daily-update.yml` | 月〜金 22:00 UTC | 価格(1000日窓) → RS計算 → core/scores 更新 + market系列(YTD) |
+| JP Daily | `jp-daily-update.yml` | 月〜金 09:00 UTC (JST 18:00) | JP版の同処理（`jp/` 名前空間） |
+| Intraday | `intraday-update.yml` | 取引時間中 | 当日の日中データ |
+| Monthly | `monthly-fetch-stocks.yml` | 毎月 | ユニバース更新 |
+| Monthly (手動) | - | 手動 | ファンダ/アナリスト予想/浮動株（`scripts/monthly/`） |
 
-### Daily Pipeline（毎営業日実行）
-1. **銘柄リスト取得**: R2 から最新の銘柄リストをダウンロード（存在しない場合は FMP API から取得）
-2. **価格データ取得**: Yahoo Finance から直近 1000 日分の価格データを取得
-3. **指標計算**: テクニカル指標（SMA, EMA, RSI, ATR, VWAP）を計算
-4. **RS/RRS 計算**: Individual/Sector/Industry の Relative Strength と Risk-adjusted Relative Strength を計算
-5. **JSON エクスポート**: 年別に分割した JSON ファイルを生成
-6. **R2 アップロード**: Cloudflare R2 に並列アップロード（過去年度はスマートスキップ）
+### US Daily の流れ
 
-### Maintenance Pipeline（履歴データ処理）
-- 1927年〜現在までの全履歴データを年別に処理
-- メモリリーク対策済みの並列アップロード
-- null データの自動スキップ
+1. `0_download_target_stocks.py` — R2 からユニバース CSV 取得（無ければ FMP から再構築）
+2. `2_fetch_price_data.py` — Yahoo Finance から直近1000日の OHLCV（失敗率2%超で中断）
+3. `2.5_add_indicators.py` — pkl → JSON 変換（OHLCV のみ。指標計算は廃止済み・名前は歴史的経緯）
+4. `3_calculate_rs.py` — Individual/Sector/Industry RS（percentile のみ。RRS は廃止済み）
+5. `4_export_to_json.py` — 年別 JSON 生成（core + scores + metadata）
+6. `5_upload_to_r2.py` — R2 アップロード（過去年は凍結、当年のみ上書き）
+7. `fetch_market_series.py --strict` → `build_market_by_year.py --merge` → `upload_market_to_r2.py` — マクロ系列
 
 ---
 
 ## 🗂️ ディレクトリ構造
+
 ```
 stock-data-pipeline/
-├── .github/
-│   └── workflows/
-│       ├── daily-update.yml          # Daily 自動実行（月〜金 21:00 UTC）
-│       └── monthly-fetch-stocks.yml  # Monthly 銘柄リスト更新
+├── .github/workflows/         # 上表の4ワークフロー
+├── common/
+│   ├── r2.py                  # R2 クライアント生成
+│   ├── symbols.py             # ユニバースCSVローダー（"N/A"のNaN化対策込み）
+│   ├── market_symbols.py      # US 保証銘柄（指数/ETF、単一の真実の情報源）
+│   └── jp_market_symbols.py   # JP 保証銘柄（1306/^N225）
 ├── scripts/
-│   ├── daily/                        # Daily パイプライン
-│   │   ├── 0_download_target_stocks.py  # R2 から銘柄リスト取得
-│   │   ├── 1_fetch_target_stocks.py     # FMP API から銘柄取得（0 から呼ばれる）
-│   │   ├── 2_fetch_price_data.py        # 価格データ取得（1000日分）
-│   │   ├── 2.5_add_indicators.py        # テクニカル指標計算
-│   │   ├── 3_calculate_rs.py            # RS/RRS 計算
-│   │   ├── 4_export_to_json.py          # JSON エクスポート（年別）
-│   │   └── 5_upload_to_r2.py            # R2 アップロード
-│   ├── maintenance/                  # Maintenance パイプライン
-│   │   ├── 1_fetch_historical_prices.py     # 履歴価格データ取得
-│   │   ├── 2_add_indicators.py              # 指標計算
-│   │   ├── 3_calculate_rs.py                # RS/RRS 計算
-│   │   ├── 4_1_export_individual_rs.py      # Individual RS エクスポート
-│   │   ├── 4_2_export_individual_rrs.py     # Individual RRS エクスポート
-│   │   ├── 4_3_export_sector_industry.py    # Sector/Industry エクスポート
-│   │   ├── 4_4_export_historical_by_year.py # 年別エクスポート
-│   │   ├── 5_1_upload_individual_rs_to_r2.py    # Individual RS アップロード
-│   │   ├── 5_2_upload_individual_rrs_to_r2.py   # Individual RRS アップロード
-│   │   ├── 5_3_upload_sector_industry_to_r2.py  # Sector/Industry アップロード
-│   │   ├── 5_4_upload_historical_by_year.py     # 年別アップロード
-│   │   ├── check_r2_files.py                    # R2 ファイル数確認
-│   │   └── process_all_historical_years.sh      # 全年一括処理
-│   └── monthly/                      # Monthly パイプライン
-│       └── ...
+│   ├── daily/                 # US 日次（0,1,2,2.5,3,4,5 + add_market_symbols_backfill）
+│   ├── jp/                    # JP 日次（0〜4 + ユニバース構築/ファンダ）→ scripts/jp/README.md
+│   ├── monthly/               # ファンダ/アナリスト予想/浮動株 → scripts/monthly/README.md
+│   ├── market/                # マクロ系列（VIX/信用/金利/為替）→ scripts/market/README.md
+│   ├── intraday/              # 日中データ
+│   └── maintenance/           # 棚卸し/欠損補充/復旧ツール → scripts/maintenance/README.md
 ├── docs/
-│   └── R2_DATA_STRUCTURE.md          # R2 データ構造ドキュメント
-├── data/                             # 一時ファイル（gitignore）
-│   ├── daily/
-│   │   └── r2/                       # Daily の R2 アップロード用
-│   └── maintenance/
-│       └── r2/                       # Maintenance の R2 アップロード用
-├── requirements.txt
-├── .env.example
-└── README.md
+│   ├── R2_DATA_STRUCTURE.md   # R2 データ構造（利用者向け）
+│   └── API_ACCESS.md          # 外部アクセス方法
+├── data/                      # 一時ファイル（gitignore）
+└── requirements.txt
 ```
 
 ---
 
 ## 🚀 セットアップ
 
-### 1. 環境変数の設定
+### 環境変数
 
-#### GitHub Actions 用（Secrets）
+GitHub Actions は Settings → Secrets、ローカルは `.env`（`.env.example` 参照）:
 
-リポジトリの Settings → Secrets and variables → Actions で以下を設定：
+- `FMP_API_KEY` — Financial Modeling Prep（stable API のみ。legacy /api/v3 は 403）
+- `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY` / `R2_ENDPOINT` / `R2_BUCKET_NAME`
 
-- `FMP_API_KEY`: Financial Modeling Prep API キー
-- `R2_ACCESS_KEY_ID`: Cloudflare R2 アクセスキー ID
-- `R2_SECRET_ACCESS_KEY`: Cloudflare R2 シークレットアクセスキー
-- `R2_ENDPOINT`: R2 エンドポイント URL（例: `https://account-id.r2.cloudflarestorage.com`）
-- `R2_BUCKET_NAME`: R2 バケット名
+### 依存関係
 
-#### ローカル開発用（.env）
-```bash
-# .env ファイルを作成
-cp .env.example .env
-
-# .env を編集
-cat > .env << EOF
-FMP_API_KEY=your_fmp_api_key
-R2_ACCESS_KEY_ID=your_r2_access_key_id
-R2_SECRET_ACCESS_KEY=your_r2_secret_access_key
-R2_ENDPOINT=https://your-account-id.r2.cloudflarestorage.com
-R2_BUCKET_NAME=your-bucket-name
-EOF
-```
-
-### 2. 依存関係のインストール
 ```bash
 pip install -r requirements.txt
 ```
 
-**主な依存パッケージ**:
-- `yfinance`: Yahoo Finance からの価格データ取得
-- `pandas`, `numpy`: データ処理
-- `boto3`: R2 アップロード
-- `python-dotenv`: 環境変数管理
+---
+
+## 💻 ローカル実行
+
+```bash
+# US Daily（順次実行）
+python scripts/daily/0_download_target_stocks.py
+python scripts/daily/2_fetch_price_data.py
+python scripts/daily/2.5_add_indicators.py
+python scripts/daily/3_calculate_rs.py
+python scripts/daily/4_export_to_json.py
+python scripts/daily/5_upload_to_r2.py            # 過去年は凍結。--force-past で件数チェック付き上書き
+
+# JP Daily は scripts/jp/README.md を参照
+# メンテナンス（棚卸し・欠損補充・復旧）は scripts/maintenance/README.md を参照
+python scripts/maintenance/check_r2_files.py       # R2 全体の棚卸し
+```
+
+Windows でのローカル実行は `PYTHONUTF8=1` を付けると cp932 起因のエンコーディングエラーを避けられる。
 
 ---
 
-## 💻 使用方法
-
-### Daily Pipeline（ローカル実行）
-```bash
-# 全ステップを順次実行
-python3 scripts/daily/0_download_target_stocks.py
-python3 scripts/daily/2_fetch_price_data.py
-python3 scripts/daily/2.5_add_indicators.py
-python3 scripts/daily/3_calculate_rs.py
-python3 scripts/daily/4_export_to_json.py
-python3 scripts/daily/5_upload_to_r2.py
-
-# クリーンアップ
-rm -rf data/daily/*
-```
-
-### Maintenance Pipeline（履歴データ処理）
-```bash
-# 全年データの一括処理（1927-2024）
-chmod +x scripts/maintenance/process_all_historical_years.sh
-nohup scripts/maintenance/process_all_historical_years.sh > process_historical.log 2>&1 &
-
-# 進捗確認
-tail -f process_historical.log
-
-# 特定の年だけ処理
-python3 scripts/maintenance/4_4_export_historical_by_year.py --year 2024
-python3 scripts/maintenance/5_4_upload_historical_by_year.py --year 2024 --workers 10
-```
-
-### R2 ファイル数確認
-```bash
-python3 scripts/maintenance/check_r2_files.py
-```
-
----
-
-## 🤖 GitHub Actions
-
-### 自動実行スケジュール
-
-- **Daily Update**: 月〜金 21:00 UTC（日本時間 翌朝 6:00）
-  - 米国市場終了後に自動実行
-  - タイムアウト設定: 60分
-  
-- **Monthly Update**: 毎月1日 00:00 UTC
-  - 銘柄リストの更新
-
-### 手動実行
-
-GitHub リポジトリの **Actions** タブから：
-1. "Daily Stock Data Update" を選択
-2. "Run workflow" をクリック
-3. Branch: main を選択して実行
-
----
-
-## 📊 R2 データ構造
+## 📊 R2 データ構造（概要）
 
 詳細は [`docs/R2_DATA_STRUCTURE.md`](docs/R2_DATA_STRUCTURE.md) を参照。
 
-### フォルダ構成概要
 ```
-r2://your-bucket/
-├── stocks/daily/
-│   ├── core/{year}/{symbol}.json           # OHLCV + RS/RRS
-│   └── indicators/standard/{year}/{symbol}.json  # テクニカル指標
-├── scores/
-│   ├── RS_scores/
-│   │   ├── individual/{year}.json          # 個別銘柄 RS
-│   │   ├── sector/{year}.json              # セクター RS
-│   │   └── industry/{year}.json            # 業種 RS
-│   └── RRS_scores/
-│       ├── individual/{year}.json          # 個別銘柄 RRS
-│       ├── sector/{year}.json              # セクター RRS
-│       └── industry/{year}.json            # 業種 RRS
-└── metadata/
-    └── last-updated.json                   # 最終更新情報
+r2://bucket/
+├── stocks/
+│   ├── daily/core/{year}/{symbol}.json     # OHLCV + rs_percentile（1927〜）
+│   ├── fundamentals/quarterly/{year}/{symbol}.json
+│   ├── analyst_estimates/{symbol}.json
+│   └── shares_float/{symbol}.json
+├── scores/RS_scores/{sector,industry}/{year}.json
+├── market/daily/{year}.json                # VIX/信用/コモディティ/金利/為替の統合ファイル
+├── market/metadata.json
+├── metadata/                               # ユニバースCSV・last-updated
+└── jp/                                     # 日本株（同構造のミラー、純コードキー）
+    ├── stocks/daily/core/{year}/{code}.json
+    ├── stocks/fundamentals/quarterly/{year}/{code}.json
+    ├── stocks/analyst_estimates/{code}.json
+    ├── stocks/shares_float/{code}.json
+    ├── scores/RS_scores/{sector,industry}/{year}.json
+    └── metadata/
 ```
 
-### データ期間
-
-- **Daily データ**: 直近 1000 日分（約 4 年）
-- **Historical データ**: 1927 年〜現在（銘柄により異なる）
+- individual RS は core の `rs_percentile` に埋め込み（`scores/RS_scores/individual/` は廃止）
+- indicators / RRS / summary / BuyPressure 系統は **廃止済み**（R2 からも削除済み）
 
 ---
 
-## 📈 計算指標
+## 📈 RS の定義（US/JP 共通）
 
-### テクニカル指標
-
-| 指標 | 説明 | パラメータ |
-|------|------|-----------|
-| SMA20/50/200 | 単純移動平均 | 20/50/200 日 |
-| EMA21 | 指数移動平均 | 21 日 |
-| RSI14 | Relative Strength Index | 14 日 |
-| ATR14 | Average True Range | 14 日 |
-| VWAP | Volume Weighted Average Price | 当日 |
-
-### RS/RRS スコア
-
-#### RS (Relative Strength)
-
-**計算式**:
 ```
-RS_raw = ret_3m × 0.4 + ret_6m × 0.2 + ret_9m × 0.2 + ret_12m × 0.2
+rs_raw = ret_3m×0.4 + ret_6m×0.2 + ret_9m×0.2 + ret_12m×0.2   （63/126/189/252営業日リターン%）
+rs_percentile = クロスセクション percentile（1〜99）、min_days=252
 ```
 
-ここで：
-- `ret_3m` = 過去3ヶ月（63営業日）のリターン（%）
-- `ret_6m` = 過去6ヶ月（126営業日）のリターン（%）
-- `ret_9m` = 過去9ヶ月（189営業日）のリターン（%）
-- `ret_12m` = 過去12ヶ月（252営業日）のリターン（%）
-
-**説明**:
-- 複数期間のリターンを加重平均し、短期（3ヶ月）に重み（40%）を置く
-- 生値（`rs_raw`）を計算後、全銘柄間でパーセンタイル化（1-99）
-- 値が高いほど相対的に強い銘柄
-
-#### RRS (Risk-adjusted Relative Strength)
-
-**計算式**:
-```
-RRS_daily = (ΔStock - ΔS&P500 × (ATR_stock / ATR_S&P500)) / ATR_stock
-RRS = Σ(RRS_daily)  # 過去12営業日の合計
-```
-
-ここで：
-- `ΔStock` = 銘柄の日次変化額
-- `ΔS&P500` = S&P500 の日次変化額
-- `ATR_stock` = 銘柄の ATR（14日、Average True Range）
-- `ATR_S&P500` = S&P500 の ATR（14日）
-
-**説明**:
-- S&P500 との比較で期待リターンを計算
-- ATR（ボラティリティ）で正規化することでリスク調整
-- 過去12日間の累積値を使用
-- より安定した（ボラティリティの低い）銘柄が高スコアになる傾向
-
-#### 集計レベル
-
-- **Individual**: 個別銘柄ごと
-- **Sector**: セクターごと（時価総額 × 出来高で加重平均）
-  - 重み = Close × Volume（最新日）
-- **Industry**: 業種ごと（時価総額 × 出来高で加重平均）
-  - 重み = Close × Volume（最新日）
-
-**パーセンタイル化**:
-- すべての生値（raw）を 1-99 のパーセンタイルに変換
-- 99 に近いほど強い（上位 1%）
-- 1 に近いほど弱い（下位 1%）
-#### 集計レベル
-- **Individual**: 個別銘柄ごと
-- **Sector**: セクターごと（時価総額加重平均）
-- **Industry**: 業種ごと（時価総額加重平均）
+- **Sector / Industry RS**: 個別 percentile を Close×Volume（最新日）で加重平均 → グループ間で再 percentile 化
+- 保証銘柄（指数/ETF、`sector='N/A'`）はグループ集計から除外（個別 RS と core には含む）
+- JP の RS はベンチマーク相対ではなく US と同じクロスセクション percentile
 
 ---
 
-## ⚡ パフォーマンス最適化
+## 🛡️ 安全設計（運用ルール）
 
-### 実装済みの最適化
-
-1. **JSON 変換の高速化** (2-3倍)
-   - `.iterrows()` → `.values` でアクセス
-   - リスト内包表記で一括変換
-
-2. **Export 処理の高速化** (3-5倍)
-   - NumPy 配列での事前計算
-   - 日付変換の一括処理
-
-3. **メモリリーク対策**
-   - スレッドごとに新しい S3 クライアント作成
-   - 明示的な `close()` 処理
-
-4. **並列アップロード**
-   - ThreadPoolExecutor (workers=10-20)
-   - スマートスキップ（既存ファイルは再アップロードしない）
+1. **year-freeze**: 過去年ファイルは R2 に存在すれば上書きしない。強制上書きは `--force-past`（既存よりレコード件数が減る場合はブロック）
+2. **ドライラン既定**: R2 に書くスクリプトは原則 `--execute` を付けて初めて実書込
+3. **取得失敗ゲート**: yfinance の失敗率 2% 超で中断（縮んだ母集団で RS を計算しない）。market 系列は `--strict`
+4. **listing 失敗時は中断**: R2 一覧取得に失敗したらアップロード全体を中止（凍結判定の前提が崩れるため）
+5. **部分アップロードは失敗扱い**: 1件でもアップロード失敗があれば exit 1
+6. **concurrency ガード**: schedule と手動実行の同時走行を防止
 
 ---
 
 ## 🔧 トラブルシューティング
 
-### Segmentation Fault が発生する
-
-**原因**: メモリリーク、並列度が高すぎる
-
-**対策**:
-```bash
-# workers を減らす
-python3 scripts/maintenance/5_4_upload_historical_by_year.py --year 2024 --workers 5
-```
-
-### GitHub Actions で "Runner not acquired" エラー
-
-**原因**: GitHub のインフラ問題
-
-**対策**:
-1. "Re-run all jobs" で再実行
-2. タイムアウト設定（既に実装済み）
-
-### R2 アップロードが遅い
-
-**対策**:
-```bash
-# workers を増やす（推奨: 10）
-python3 scripts/daily/5_upload_to_r2.py
-# デフォルトで workers=20 設定済み
-```
-
----
-
-## 📝 開発メモ
-
-### データフロー
-```
-[FMP API] → target_stocks_latest.csv
-    ↓
-[Yahoo Finance] → temp_prices.pkl (1000日分)
-    ↓
-[指標計算] → temp_prices_with_indicators.pkl
-    ↓
-[RS/RRS 計算] → temp_rs_*.json, temp_rrs_*.json (6種類)
-    ↓
-[Export] → data/daily/r2/ (年別 JSON)
-    ↓
-[Upload] → Cloudflare R2
-```
-
-### 年別アーキテクチャの利点
-
-1. **R2 の制約に対応**: サーバーサイドでのデータ結合不可
-2. **クライアント最適化**: 必要な年だけダウンロード
-3. **キャッシュ効率**: 過去年度は変更されないため CDN でキャッシュ可能
+- **GitHub Actions "Runner not acquired"**: GitHub 側の問題。Re-run で再実行
+- **yfinance の空応答が続く**: レート制限の典型。時間を置いて再実行（失敗率ゲートで自動中断される）
+- **アップロードが遅い**: `MAX_WORKERS`（既定10）を調整。boto3 クライアントは安定性優先で都度生成（過去に再利用で不具合実績あり）
 
 ---
 
 ## 📡 外部アクセス
 
-データを利用したい開発者向けのアクセス方法は [`docs/API_ACCESS.md`](docs/API_ACCESS.md) を参照してください。
-
-- 読み取り専用 API が利用可能
-- Cloudflare Workers API 経由でのアクセス推奨
-- 直接 R2 アクセスも可能（AWS SDK 互換）
-
----
-
-## 🤝 貢献
-
-このリポジトリは private です。
+[`docs/API_ACCESS.md`](docs/API_ACCESS.md) を参照（読み取り専用、Cloudflare Workers API 経由推奨）。
 
 ---
 
 ## 📄 ライセンス
 
 Private repository - All rights reserved.
-
----
-
-## 📞 サポート
-
-データ構造や利用方法については [`docs/R2_DATA_STRUCTURE.md`](docs/R2_DATA_STRUCTURE.md) を参照してください。
