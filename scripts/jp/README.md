@@ -17,7 +17,7 @@
 | 0 | `0_download_jp_universe.py` | R2からユニバースCSVをダウンロード（無ければ`build_jp_universe.py --execute`で再構築） | `data/target_stocks_jp_latest.csv` |
 | 0 | `build_jp_universe.py` | JPX `data_j.xls` からユニバース構築 + `JP_MARKET_SYMBOLS` 注入 | `data/target_stocks_jp_latest.csv`, R2 `jp/metadata/…csv` |
 | 1 | `1_fetch_jp_prices.py` | yfinance で価格取得 → OHLCV JSON（`^`始まりは`.T`を付けない） | `data/temp_prices_jp.json` / `.pkl` |
-| 2 | `2_calculate_jp_rs.py` | Individual / Sector / Industry RS 計算 | `data/temp_rs_*_jp.json` |
+| 2 | `2_calculate_jp_rs.py` | Individual / Sector / Industry RS 計算 | `data/temp_rs_*_jp.pkl` |
 | 3 | `3_export_jp_json.py` | 価格+RS を年別 JSON 化 | `data/jp/r2/jp/…` |
 | 4 | `4_upload_jp_r2.py` | R2 へアップロード（過去年凍結・当年上書き） | R2 `jp/…` |
 | - | `fetch_jp_fundamentals.py` | FMP stable(`{code}.T`)から四半期ファンダ取得。US版のfetch関数をそのまま再利用 | `data/temp_fundamentals_jp.json` |
@@ -38,7 +38,7 @@ python scripts/jp/4_upload_jp_r2.py            # dry-run（既定）
 
 # 2. 全件フル履歴
 python scripts/jp/1_fetch_jp_prices.py --start 2004-01-01
-python scripts/jp/2_calculate_jp_rs.py         # 全期間出力（--output-days 既定 100000）
+python scripts/jp/2_calculate_jp_rs.py         # 常に全期間を計算（日数指定オプションは無い）
 python scripts/jp/3_export_jp_json.py
 python scripts/jp/4_upload_jp_r2.py --execute  # 実投入（過去年は凍結）
 ```
@@ -49,7 +49,11 @@ python scripts/jp/4_upload_jp_r2.py --execute  # 実投入（過去年は凍結�
 
 ## 安全弁
 - `4_upload_jp_r2.py` は**既定ドライラン**。`--execute` で実投入、`--force-past` でスキーマ変更時に過去年も上書き
+  （既存よりレコード件数が減るファイルはブロック）
 - 過去年ファイルは「R2 に無ければ書く」で凍結（US と同じ freeze 方針）
+- CSVローダーは `"N/A"` 文字列の NaN 化（`pd.read_csv` のデフォルト挙動）を `'N/A'` に正規化する。
+  正規化しないと保証銘柄（1306/^N225）が NaN グループとしてランキング母数に混入する
+  （2026-08-13 修正済み。US側 `common/symbols.py` と同じ対策）
 
 ## 日次自動更新（`.github/workflows/jp-daily-update.yml`、2026-07-21〜）
 - cron: 平日 UTC 09:00（JST 18:00、東証引け後）+ `workflow_dispatch`

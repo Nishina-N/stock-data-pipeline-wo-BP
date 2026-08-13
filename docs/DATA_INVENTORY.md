@@ -17,11 +17,14 @@
 | 保証銘柄 | 指数・主要ETF・セクターETF11種を最終CSVへ強制注入（下記） |
 
 ### 保証銘柄（必ず取得・保存）
-`1_fetch_target_stocks.py` の `MARKET_SYMBOLS` で管理。フィルタで脱落させず最終CSVに注入する。
+`common/market_symbols.py` の `MARKET_SYMBOLS` で管理（単一の真実の情報源。2026-08時点32銘柄）。
+フィルタで脱落させず最終CSVに注入する。
 - 指数: `^GSPC`(S&P500), `^IXIC`(NASDAQ), `^DJI`(Dow), `^RUT`(Russell2000)
 - ブロードETF: `SPY`, `QQQ`, `DIA`, `IWM`, `SMH`, `SOXX`
 - セクターSPDR 11種: `XLK, XLF, XLV, XLE, XLI, XLY, XLP, XLU, XLB, XLRE, XLC`
+- レバレッジ/コモディティETF 12種（2026-08-04追加）: `TMF, TMV, GLD, TECL, TQQQ, SPXL, SOXL, SPXS, SQQQ, SOXS, TNA, TZA`
 - これらは Sector/Industry を `N/A` とし、セクター/業種RSの集計には混ぜない（個別RS と core OHLCV としては保持）。
+  ※ CSV往復で `"N/A"` が NaN 化してもグループ集計に混入しないよう、ローダー側で正規化済み（2026-08-13）
 
 > 注意: R2上の旧データ（indicators/RRS_scores/summary/BuyPressure/RS_scores/individual）は `scripts/maintenance/cleanup_deprecated_r2.py --execute` で削除済み。
 > `scores/RS_scores/individual` は core の `rs_percentile` と重複するため削除し、日次出力も停止した（sector/industry RS は core に無い集計のため継続）。この削除で R2 使用量は 12.53GB → 7.80GB（無料枠10GB内）。
