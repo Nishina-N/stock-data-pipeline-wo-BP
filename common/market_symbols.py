@@ -47,6 +47,15 @@ MARKET_SYMBOLS = {
     'SOXS':  ('Direxion Daily Semiconductor Bear 3X Shares', 'N/A', 'N/A'),
     'TNA':   ('Direxion Daily Small Cap Bull 3X Shares', 'N/A', 'N/A'),
     'TZA':   ('Direxion Daily Small Cap Bear 3X Shares', 'N/A', 'N/A'),
+    # 債券/コモディティ/ドル ETF（株式以外・β が 0 や負の資産の対照用）
+    # ※ HYG/LQD/IEF は market/daily 系列にも入っているが、そちらは日付×ティッカーの
+    #   統合ファイル。core に入れることで個別 RS 付き・銘柄別年次ファイルとして扱える
+    'TLT':   ('iShares 20+ Year Treasury Bond ETF', 'N/A', 'N/A'),
+    'IEF':   ('iShares 7-10 Year Treasury Bond ETF', 'N/A', 'N/A'),
+    'HYG':   ('iShares iBoxx High Yield Corporate Bond ETF', 'N/A', 'N/A'),
+    'LQD':   ('iShares iBoxx Investment Grade Corporate Bond ETF', 'N/A', 'N/A'),
+    'SLV':   ('iShares Silver Trust', 'N/A', 'N/A'),
+    'UUP':   ('Invesco DB US Dollar Index Bullish Fund', 'N/A', 'N/A'),
 }
 
 # 後方互換: IPO日チェックなどをバイパスする対象
