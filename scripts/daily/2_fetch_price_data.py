@@ -15,6 +15,11 @@ DATA_FOLDER = "data"
 TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, "target_stocks_latest.csv")
 TEMP_PRICE_PKL = os.path.join(DATA_FOLDER, "temp_prices.pkl")
 
+# 失敗銘柄がこの割合を超えたら全体を失敗させる。
+# RS はクロスセクション percentile なので母集団が縮むと全銘柄の値が歪む。
+# 部分的な取得結果で下流（RS計算→R2上書き）へ進むより止める方が安全。
+MAX_FAILED_RATIO = 0.02
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_symbols_from_csv():
@@ -84,7 +89,11 @@ def download_price_data(symbols, start_date, end_date=None, chunk_size=50, delay
                     break
                 else:
                     logging.warning(f"⚠ Chunk {chunk_num} returned empty data")
-                    
+                    # yfinance のレート制限は空応答で現れることが多い。
+                    # 即時再試行では回復しないためリトライ前に待つ
+                    if retry < max_retries - 1:
+                        time.sleep(delay * 2)
+
             except Exception as e:
                 logging.error(f"✗ Chunk {chunk_num} error (retry {retry + 1}): {e}")
                 if retry < max_retries - 1:
@@ -98,9 +107,17 @@ def download_price_data(symbols, start_date, end_date=None, chunk_size=50, delay
     if failed_symbols:
         logging.warning(f"\n⚠ {len(failed_symbols)} symbols failed")
         failed_path = os.path.join(DATA_FOLDER, 'failed_symbols.txt')
-        with open(failed_path, 'w') as f:
+        with open(failed_path, 'w', encoding='utf-8') as f:
             f.write('\n'.join(failed_symbols))
         logging.info(f"Failed symbols saved to: {failed_path}")
+
+    # 大量失敗ゲート: 縮んだ母集団で RS を計算・上書きしない
+    failed_ratio = len(failed_symbols) / len(symbols)
+    if failed_ratio > MAX_FAILED_RATIO:
+        logging.error(f"🛑 {len(failed_symbols)}/{len(symbols)} symbols failed "
+                      f"({failed_ratio:.1%} > {MAX_FAILED_RATIO:.0%}) — aborting to avoid "
+                      f"degraded cross-sectional RS")
+        return None
 
     if not all_data:
         logging.error("No data downloaded!")
