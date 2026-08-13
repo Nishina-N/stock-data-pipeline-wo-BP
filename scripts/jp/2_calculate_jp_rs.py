@@ -45,10 +45,14 @@ def load_symbols_info_jp(csv_path=JP_CSV):
     info = {}
     for _, row in df.iterrows():
         code = str(row['Symbol']).strip()
+        sector = row.get('Sector', 'N/A')
+        industry = row.get('Industry', 'N/A')
         info[code] = {
             'name': row.get('Company Name', code),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A'),
+            # read_csv は文字列 "N/A" を NaN に変換するため 'N/A' に正規化
+            # （NaN は truthy かつ != 'N/A' なので下流のグループ除外を素通りする）
+            'sector': sector if pd.notna(sector) else 'N/A',
+            'industry': industry if pd.notna(industry) else 'N/A',
         }
     logging.info(f"Loaded info for {len(info)} symbols")
     return info
@@ -141,9 +145,9 @@ def main():
         if not meta:
             continue
         s, ind = meta.get('sector'), meta.get('industry')
-        if s and s != 'N/A' and s != '-':
+        if s and pd.notna(s) and s != 'N/A' and s != '-':
             sectors_of.setdefault(s, []).append(code)
-        if ind and ind != 'N/A' and ind != '-':
+        if ind and pd.notna(ind) and ind != 'N/A' and ind != '-':
             industries_of.setdefault(ind, []).append(code)
 
     sector_pct = calc_group_percentile(indiv_pct, weights, sectors_of, 'sector')

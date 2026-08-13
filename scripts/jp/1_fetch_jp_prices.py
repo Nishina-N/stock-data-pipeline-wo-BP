@@ -192,11 +192,12 @@ def main():
         df = df.head(args.limit)
         logging.info(f"DRY-RUN: limited to first {len(df)} symbols")
 
+    # read_csv は "N/A" を NaN に変換するため 'N/A' に正規化して保持
     info_by_code = {
         row['Symbol']: {
             'name': row.get('Company Name', row['Symbol']),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A'),
+            'sector': row['Sector'] if pd.notna(row.get('Sector')) else 'N/A',
+            'industry': row['Industry'] if pd.notna(row.get('Industry')) else 'N/A',
         }
         for _, row in df.iterrows()
     }

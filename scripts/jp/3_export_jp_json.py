@@ -44,10 +44,14 @@ def load_info(csv_path=JP_CSV):
     info = {}
     for _, row in df.iterrows():
         code = str(row['Symbol']).strip()
+        sector = row.get('Sector', 'N/A')
+        industry = row.get('Industry', 'N/A')
         info[code] = {
             'name': row.get('Company Name', code),
-            'sector': row.get('Sector', 'N/A'),
-            'industry': row.get('Industry', 'N/A'),
+            # read_csv は文字列 "N/A" を NaN に変換する。NaN のまま json.dump すると
+            # 非strictな `NaN` トークンが出力されるため 'N/A' に正規化
+            'sector': sector if pd.notna(sector) else 'N/A',
+            'industry': industry if pd.notna(industry) else 'N/A',
         }
     return info
 
