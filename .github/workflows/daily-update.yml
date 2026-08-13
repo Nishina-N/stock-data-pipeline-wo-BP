@@ -2,18 +2,20 @@ name: Daily Stock Data Update
 
 on:
   schedule:
-    - cron: '0 22 * * 1-5'  # Mon-Fri 21:00 UTC
+    - cron: '0 22 * * 1-5'  # Mon-Fri 22:00 UTC
   workflow_dispatch:
+
+# schedule と workflow_dispatch の同時走行を防ぐ（R2 の同一キー群への競合書込防止）。
+# strategy.max-parallel は matrix 内にしか効かず run 間の排他にはならない
+concurrency:
+  group: daily-update
+  cancel-in-progress: false
 
 jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    
-    strategy:
-      fail-fast: false
-      max-parallel: 1
-    
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -71,7 +73,7 @@ jobs:
         timeout-minutes: 120
       
       - name: 6. Fetch market/macro series (YTD)
-        run: python scripts/market/fetch_market_series.py --start $(date -u +%Y-01-01)
+        run: python scripts/market/fetch_market_series.py --start $(date -u +%Y-01-01) --strict
         timeout-minutes: 20
 
       - name: 7. Build market by year (merge into R2)

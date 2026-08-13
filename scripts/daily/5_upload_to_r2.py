@@ -39,25 +39,28 @@ def create_s3_client():
 def get_existing_files_in_r2(prefix):
     """
     R2の指定プレフィックス配下の全ファイルをlist_objectsで取得（高速）
+
+    listing 失敗時は例外を送出する。ここで空 set を返すと呼び出し側が
+    「過去年ファイルが全て存在しない＝新規」と誤解し、year-freeze が
+    全面バイパスされて過去年が当日生成の部分データで上書きされてしまう。
+    listing 成功は過去年アップロード判定の前提条件。
     """
     s3_client = create_s3_client()
     existing_keys = set()
-    
+
     try:
         paginator = s3_client.get_paginator('list_objects_v2')
         pages = paginator.paginate(Bucket=R2_BUCKET_NAME, Prefix=prefix)
-        
+
         for page in pages:
             if 'Contents' in page:
                 for obj in page['Contents']:
                     existing_keys.add(obj['Key'])
-        
+
         logging.info(f"Found {len(existing_keys)} existing files in R2 under '{prefix}'")
-    except Exception as e:
-        logging.error(f"Error listing R2 objects: {e}")
     finally:
         s3_client.close()
-    
+
     return existing_keys
 
 def extract_year_from_path(file_path):
@@ -108,11 +111,13 @@ def record_count(obj):
 
 def is_record_count_shrinking(s3_client, bucket, local_path, s3_key):
     """既存R2オブジェクトよりローカルの新データの件数が減っていないか確認。
-    件数判定できない場合は安全側（shrink無し扱い）で通す。"""
+    既存が無い(NoSuchKey)場合のみ比較スキップ。ネットワーク障害等の
+    「チェック不能」は例外を送出する（不能を『既存なし』と同一視すると
+    障害時にガードが素通しになるため）。"""
     try:
         existing_obj = s3_client.get_object(Bucket=bucket, Key=s3_key)
         existing_count = record_count(json.loads(existing_obj['Body'].read()))
-    except Exception:
+    except s3_client.exceptions.NoSuchKey:
         return False, None, None
 
     with open(local_path, 'r', encoding='utf-8') as f:
@@ -124,10 +129,11 @@ def is_record_count_shrinking(s3_client, bucket, local_path, s3_key):
 
 def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_type='year',
                                target_date=None, force_past=False):
+    """(success_count, fail_count) を返す。fail>0 は呼び出し側で失敗扱いにすること"""
     if not os.path.exists(local_dir):
         logging.warning(f"Directory not found: {local_dir}")
-        return 0
-    
+        return 0, 0
+
     # 全ファイル収集
     all_files = []
     for root, dirs, files in os.walk(local_dir):
@@ -141,8 +147,8 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
     
     if not all_files:
         logging.info(f"No files in {local_dir}")
-        return 0
-    
+        return 0, 0
+
     # フィルタリング
     files_to_upload = []
     
@@ -197,8 +203,8 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
     
     if not files_to_upload:
         logging.info(f"No files to upload in {local_dir}")
-        return 0
-    
+        return 0, 0
+
     logging.info(f"Uploading {len(files_to_upload)} files from {local_dir} with {workers} workers...")
     
     success_count = 0
@@ -233,7 +239,7 @@ def upload_directory_parallel(local_dir, s3_prefix, workers=MAX_WORKERS, filter_
                 logging.error(f"Error uploading {s3_key}: {e}")
     
     logging.info(f"✅ Uploaded: {success_count} files, ❌ Failed: {fail_count} files")
-    return success_count
+    return success_count, fail_count
 
 def main():
     ap = argparse.ArgumentParser()
@@ -253,25 +259,42 @@ def main():
         return False
 
     total_uploaded = 0
+    total_failed = 0
 
-    logging.info("\n[1/3] Uploading stocks/daily/core...")
-    core_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
-    total_uploaded += upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year',
-                                                 force_past=args.force_past)
+    try:
+        logging.info("\n[1/3] Uploading stocks/daily/core...")
+        core_dir = os.path.join(R2_OUTPUT, "stocks", "daily", "core")
+        ok, fail = upload_directory_parallel(core_dir, "stocks/daily/core", filter_type='year',
+                                             force_past=args.force_past)
+        total_uploaded += ok
+        total_failed += fail
 
-    logging.info("\n[2/3] Uploading scores...")
-    scores_dir = os.path.join(R2_OUTPUT, "scores")
-    total_uploaded += upload_directory_parallel(scores_dir, "scores", filter_type='year',
-                                                 force_past=args.force_past)
+        logging.info("\n[2/3] Uploading scores...")
+        scores_dir = os.path.join(R2_OUTPUT, "scores")
+        ok, fail = upload_directory_parallel(scores_dir, "scores", filter_type='year',
+                                             force_past=args.force_past)
+        total_uploaded += ok
+        total_failed += fail
 
-    logging.info("\n[3/3] Uploading metadata...")
-    metadata_dir = os.path.join(R2_OUTPUT, "metadata")
-    total_uploaded += upload_directory_parallel(metadata_dir, "metadata", filter_type='always')
-    
+        logging.info("\n[3/3] Uploading metadata...")
+        metadata_dir = os.path.join(R2_OUTPUT, "metadata")
+        ok, fail = upload_directory_parallel(metadata_dir, "metadata", filter_type='always')
+        total_uploaded += ok
+        total_failed += fail
+    except Exception as e:
+        # listing 失敗など。年凍結判定の前提が崩れているため中断（劣化上書き防止）
+        logging.error(f"🛑 Upload aborted: {e}")
+        return False
+
     logging.info("="*60)
-    logging.info(f"✅ Upload completed: {total_uploaded} files total")
+    logging.info(f"✅ Upload completed: {total_uploaded} files total"
+                 + (f", ❌ {total_failed} failed" if total_failed else ""))
     logging.info("="*60)
-    
+
+    if total_failed > 0:
+        # 部分アップロードを成功として扱わない（CI を緑にしない）
+        logging.error(f"🛑 {total_failed} file(s) failed to upload — exiting with error")
+        return False
     return True
 
 if __name__ == "__main__":
