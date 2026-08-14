@@ -54,7 +54,12 @@ SERIES = {
 }
 
 
-def fetch_one(ticker, start, end, max_retries=3):
+# リトライ間隔（秒）。レート制限は数秒では解けないことがあるため指数的に伸ばす。
+# 全16シリーズが最悪ケースを踏んでも 16*(5+20+60) ≒ 23分で、日次ジョブの許容範囲。
+RETRY_BACKOFF = (5, 20, 60)
+
+
+def fetch_one(ticker, start, end, max_retries=len(RETRY_BACKOFF) + 1):
     """1シリーズを取得し {date: {open,high,low,close,volume}} を返す"""
     for attempt in range(max_retries):
         try:
@@ -65,7 +70,14 @@ def fetch_one(ticker, start, end, max_retries=3):
                 df = yf.download(ticker, period="max", end=end, auto_adjust=True,
                                  progress=False, threads=False)
             if df is None or df.empty:
-                logging.warning(f"  {ticker}: empty")
+                # yfinance はレート制限(YFRateLimitError)を内部で握りつぶし、
+                # 例外ではなく空 DataFrame を返す。ここで即 return すると
+                # max_retries が例外経路にしか効かず、transient で 1 回も
+                # 再試行されないまま no data 扱いになる（--strict でジョブ全体が落ちる）
+                logging.warning(f"  {ticker}: empty (attempt {attempt + 1}/{max_retries})")
+                if attempt < max_retries - 1:
+                    time.sleep(RETRY_BACKOFF[attempt])
+                    continue
                 return {}
             # 単一ティッカーでも columns が MultiIndex になる場合がある
             if isinstance(df.columns, pd.MultiIndex):
@@ -89,7 +101,7 @@ def fetch_one(ticker, start, end, max_retries=3):
             if attempt == max_retries - 1:
                 logging.error(f"  {ticker}: failed after {max_retries}: {e}")
                 return {}
-            time.sleep(2)
+            time.sleep(RETRY_BACKOFF[attempt])
     return {}
 
 
