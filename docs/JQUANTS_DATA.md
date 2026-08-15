@@ -105,8 +105,18 @@ in-sample 前半 2008-2014 には掛からない。
 **EDINET 系は非対応**（"This endpoint is not available for csv download"）。
 
 ⚠️ bulk の内容が API と一致する保証はない（FMP で最新データ欠落の実績あり）ので、
-`6_fetch_bulk.py --verify` が同じ日を日次 API でも引いて件数を突き合わせる。
-5系統すべて一致を確認済み（options225 2,430=2,430 ほか）。
+`6_fetch_bulk.py --verify` が同じ日を日次 API でも引いて**件数と列**を突き合わせる。
+
+🔴 **`/equities/bars/daily` は bulk が Adj* 15列を落としている**（API 44列 / bulk 29列）。
+   AdjO/AdjC/AdjH/AdjL/AdjVo と前場(MAdj*)・後場(AAdj*)ぶん。
+   **行数は一致するので件数比較だけでは気づけない。** この系統だけは日次 API で取る。
+   （delisted_bars は API 経由で44列なので、bulk で取ると同じ名前空間に
+     列構成の違う4本値が並ぶことになる）
+   他の5系統（options225 / futures / indices / short-sale-report / earnings-date）は
+   件数・列とも完全一致。
+
+⚠️ `/indices/bars/daily/topix` は `indices` の `Code='0000'` と同一なので取らない
+   （2016-09 の終値 20/20 一致を確認済み）。`date` パラメータも効かず全期間を返す。
 
 ⚠️ `/markets/short-sale-report` は `date` を受け付けず `disc_date`/`calc_date`/`code`。
 検証時の日付パラメータは系統ごとに違う。
@@ -183,7 +193,7 @@ master Code 例: ['13010', '13050', '13060', ...]   桁数分布 {5}   末尾0�
 {"message": "Your subscription covers the following dates: 2006-08-15 ~ ."}
 ```
 
-## R2 レイアウト（2026-08-15 投入済み・227オブジェクト 1,753MB・3,449万行）
+## R2 レイアウト（2026-08-16 投入済み・246オブジェクト 3,095MB・5,053万行）
 
 | キー | 行数 | 実開始 | 内容 |
 |---|---|---|---|
@@ -207,6 +217,7 @@ master Code 例: ['13010', '13050', '13060', ...]   桁数分布 {5}   末尾0�
 | `edinet_large/{year}.parquet` | 64,896 | **2021-07-01** | 大量保有報告 |
 | `edinet_major/{year}.parquet` | 44,386 | **2016-06-03** | 大株主 |
 | `edinet_cross/{year}.parquet` | 25,694 | **2020-05-29** | 政策保有株式 |
+| `bars_daily/{year}.parquet` | 16,043,562 | 2008-05-07 | 現存銘柄の日次4本値（照合用・**API経由44列**） |
 
 ### 保存時の型の扱い
 

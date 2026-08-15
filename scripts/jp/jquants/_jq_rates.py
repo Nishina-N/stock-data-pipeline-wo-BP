@@ -48,6 +48,7 @@ RATES_PER_MIN = {
     'margin_interest': 120,
     'margin_alert':    120,
     'investor_types':  120,
+    'bars_daily':      120,
     'edinet_major':    120,
     'edinet_cross':    120,
     'edinet_large':    120,

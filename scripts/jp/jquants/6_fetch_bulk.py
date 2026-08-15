@@ -44,6 +44,14 @@ BULK_DATASETS = {
     'indices':           '/indices/bars/daily',
     'short_sale_report': '/markets/short-sale-report',
     'earnings_date':     '/fins/earnings-date',
+    # 🔴 /equities/bars/daily は bulk を使わないこと。
+    #    bulk は Adj*（AdjO/AdjC/MAdj*/AAdj* の15列）を落としており、
+    #    API 44列に対し 29列しか無い（行数は一致するので件数比較では気づけない）。
+    #    delisted_bars は API 経由で44列あるため、bulk で取ると
+    #    同じ名前空間に列構成の違う4本値が並ぶ。3_fetch_bydate_series.py で取る。
+    #
+    # /indices/bars/daily/topix も不要。indices の Code='0000' と同一
+    #    （2016-09 の終値 20/20 一致を確認済み）。
 }
 
 # 検証時に日次 API へ渡す日付パラメータ名。既定は 'date' だが、
@@ -52,6 +60,11 @@ BULK_DATASETS = {
 VERIFY_DATE_PARAM = {
     'short_sale_report': 'disc_date',
 }
+
+# 🔴 date パラメータが効かず、指定しても**全期間**を返す系統。
+# 件数の単純比較だと必ず不一致になる（topix は bulk 1行 vs API 4,471行）ので、
+# API 側を日付で絞ってから比較する。
+IGNORES_DATE_PARAM = {'topix'}
 
 
 def list_files(client, endpoint):
@@ -116,11 +129,26 @@ def verify(client, dataset, endpoint):
         # gzip として妥当かは確認済み）。取得全体を失敗させない
         logging.warning(f'  検証を実施できませんでした（{param}）: {e}')
         return True
+    if dataset in IGNORES_DATE_PARAM:
+        # 全期間が返るので、こちらで当該日に絞ってから数える
+        api_rows = [r for r in api_rows if r.get(date_col) == day]
     n_api = len(api_rows)
     ok = n_bulk == n_api
     mark = '✓' if ok else '✗'
     logging.info(f'  {mark} 検証 {day}: bulk {n_bulk:,}行 / API {n_api:,}行'
                  f'{"" if ok else "  ← 不一致"}')
+
+    # 🔴 行数だけでは足りない。/equities/bars/daily は bulk が Adj* 15列を
+    #    落としている（API 44列 / bulk 29列）のに行数は一致する。
+    #    列の欠落は静かに効くので必ず突き合わせる
+    if api_rows:
+        missing = sorted(set(api_rows[0]) - set(rows[0]))
+        if missing:
+            ok = False
+            logging.error(f'  ✗ 列の欠落 {len(missing)}件: bulk に無い列 {missing}')
+            logging.error('    → この系統は bulk ではなく日次 API で取得すること')
+        else:
+            logging.info(f'  ✓ 列一致 {len(api_rows[0])}列')
     return ok
 
 
