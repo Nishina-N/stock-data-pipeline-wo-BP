@@ -48,6 +48,9 @@ RATES_PER_MIN = {
     'margin_interest': 120,
     'margin_alert':    120,
     'investor_types':  120,
+    'edinet_major':    120,
+    'edinet_cross':    120,
+    'edinet_large':    120,
     # /fins/summary と /fins/details はプランに関わらず 60/分の個別上限。margin を見て 57
     'fins_summary':     57,
     'fins_details':     57,

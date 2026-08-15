@@ -81,11 +81,43 @@ master?date=2008-05-07 → n=2,494  Code集合は完全一致（差分 0）
 in-sample 前半 2008-2014 には掛からない。
 2015-01〜03 はエラーではなく **200 で 0 件**が返るので、開始年の探索は件数で見ること。
 
+### 🔴 台帳・当初プローブに載っていなかったエンドポイント
+
+公式の仕様一覧（https://jpx-jquants.com/ja/spec）で判明。うち3つは台帳が
+「V2パス未特定」として諦めていたもの。**エンドポイント一覧は台帳ではなく公式を見ること。**
+
+| パス | 実開始 | 備考 |
+|---|---|---|
+| `/edinet/large-volume-shareholders` | 2021-07-01 | 大量保有報告。`TotalShsRatio`/`TotalShsRatioLast`/`ChgRsn` |
+| `/edinet/major-shareholders` | 2016-06-03 | 大株主 |
+| `/edinet/cross-shareholdings` | 2020-05-29 | 政策保有株式 |
+| `/fins/earnings-date` | 2014-09-01 | **発表予定日の履歴**（`SchDate`/`PubDate`）。earnings-calendar とは別物 |
+| `/bulk/list` `/bulk/get` | — | 月次 gzip CSV。下記 |
+
+### /bulk で取得コストが桁違いに下がる
+
+`/bulk/list?endpoint=...` が月次 gzip CSV の一覧を返し、`/bulk/get?key=...` が
+署名付き URL を返す。日次 API を営業日ぶん叩く必要がない。
+
+**225オプションは API 経由で約4時間のところ bulk で4分**（228ファイル・255MB）。
+
+対応: options225 / futures / indices / short-sale-report / earnings-date / bars/daily ほか。
+**EDINET 系は非対応**（"This endpoint is not available for csv download"）。
+
+⚠️ bulk の内容が API と一致する保証はない（FMP で最新データ欠落の実績あり）ので、
+`6_fetch_bulk.py --verify` が同じ日を日次 API でも引いて件数を突き合わせる。
+5系統すべて一致を確認済み（options225 2,430=2,430 ほか）。
+
+⚠️ `/markets/short-sale-report` は `date` を受け付けず `disc_date`/`calc_date`/`code`。
+検証時の日付パラメータは系統ごとに違う。
+
 ### 使えないもの
 
 - `/equities/bars/minute`・`/equities/bars/daily/am` … 403（アドオン未購入）
-- `/equities/earnings-calendar` … 200 だが**次の発表予定1件のみで履歴なし**。研究には使えない
-- 株価ティック … V2 にパスが存在しない（`/equities/trades` 等すべて不在）
+- `/equities/earnings-calendar` … 200 だが**次の発表予定1件のみで履歴なし**。
+  ただし **`/fins/earnings-date` には履歴がある**（別物）
+- 株価ティック … V2 にパスが存在しない（`/equities/trades` は
+  403「endpoint does not exist」）。**「パス未特定」ではなく「不在」で確定**
 
 ## レート制限（公式仕様）
 
@@ -151,7 +183,7 @@ master Code 例: ['13010', '13050', '13060', ...]   桁数分布 {5}   末尾0�
 {"message": "Your subscription covers the following dates: 2006-08-15 ~ ."}
 ```
 
-## R2 レイアウト（2026-08-15 投入済み・119オブジェクト 1,353MB・1,884万行）
+## R2 レイアウト（2026-08-15 投入済み・227オブジェクト 1,753MB・3,449万行）
 
 | キー | 行数 | 実開始 | 内容 |
 |---|---|---|---|
@@ -167,6 +199,14 @@ master Code 例: ['13010', '13050', '13060', ...]   桁数分布 {5}   末尾0�
 | `margin_interest/{year}.parquet` | 2,733,428 | **2012-02-10** | 週末残高（**金曜のみ**）。制度/一般別 |
 | `margin_alert/{year}.parquet` | 576,964 | 2008-05 | 日々公表。PubReason にフラグ |
 | `investor_types.parquet` | 4,338 | 2008-01-04 | 投資部門別（週次・年分割なし） |
+| `options225/{year}.parquet` | 12,837,206 | 2008-05-07 | 日経225オプション（bulk 取得） |
+| `short_sale_report/{year}.parquet` | 1,562,921 | **2013-11-07** | 空売り残高報告（bulk 取得） |
+| `indices/{year}.parquet` | 608,937 | 2008-05-07 | 指数4本値・152指数（bulk 取得） |
+| `futures/{year}.parquet` | 301,789 | 2008-05-07 | 先物（bulk 取得） |
+| `earnings_date/{year}.parquet` | 183,423 | **2014-09-01** | 発表**予定**日（bulk 取得） |
+| `edinet_large/{year}.parquet` | 64,896 | **2021-07-01** | 大量保有報告 |
+| `edinet_major/{year}.parquet` | 44,386 | **2016-06-03** | 大株主 |
+| `edinet_cross/{year}.parquet` | 25,694 | **2020-05-29** | 政策保有株式 |
 
 ### 保存時の型の扱い
 

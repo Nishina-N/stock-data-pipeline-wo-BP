@@ -47,6 +47,48 @@ def discover_bydate_datasets():
     return out
 
 
+def discover_bulk_datasets():
+    """6_fetch_bulk.py が落とした月次 CSV.gz のデータセットを検出する。"""
+    root = os.path.join(DATA_ROOT, '_bulk')
+    if not os.path.isdir(root):
+        return []
+    return sorted(n for n in os.listdir(root)
+                  if os.path.isdir(os.path.join(root, n)))
+
+
+def compact_bulk(dataset):
+    """_bulk/{dataset}/*.csv.gz → _parquet/{dataset}/{YYYY}.parquet
+
+    ファイル名末尾の YYYYMM で年を決める（例 ..._options_225_200805.csv.gz）。
+    """
+    files = sorted(glob.glob(os.path.join(DATA_ROOT, '_bulk', dataset, '*.csv.gz')))
+    if not files:
+        logging.warning(f'{dataset}: bulk データがありません（スキップ）')
+        return 0
+
+    by_year = {}
+    for fn in files:
+        stem = os.path.basename(fn).replace('.csv.gz', '')
+        ym = stem.rsplit('_', 1)[-1]           # YYYYMM
+        by_year.setdefault(ym[:4], []).append(fn)
+
+    total = 0
+    for year in sorted(by_year):
+        parts = [pd.read_csv(f, compression='gzip', dtype=str)
+                 for f in sorted(by_year[year])]
+        df = pd.concat(parts, ignore_index=True)
+        if df.empty:
+            continue
+        # CSV は全て文字列で読んでいるので、数値化できる列は数値へ戻す
+        # （'-' 等が混ざる列は文字列のまま残る＝JSON 経由の系統と同じ扱い）
+        for c in df.columns:
+            conv = pd.to_numeric(df[c], errors='coerce')
+            if conv.notna().sum() == df[c].notna().sum() and conv.notna().any():
+                df[c] = conv
+        total += _write(df, os.path.join(dataset, f'{year}.parquet'))
+    return total
+
+
 def discover_range_datasets():
     """range モードで取得したデータセット（年ディレクトリを持たず、
     直下に {start}_{end}.json を置くもの。investor_types）を検出する。"""
@@ -193,6 +235,8 @@ def main():
         jobs[ds] = (lambda d=ds: compact_bydate(d))
     for ds in discover_range_datasets():
         jobs[ds] = (lambda d=ds: compact_range(d))
+    for ds in discover_bulk_datasets():
+        jobs[ds] = (lambda d=ds: compact_bulk(d))
 
     targets = [args.only] if args.only else list(jobs)
     unknown = [t for t in targets if t not in jobs]

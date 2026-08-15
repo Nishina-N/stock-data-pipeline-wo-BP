@@ -69,6 +69,13 @@ DATASETS = {
     # 投資部門別。**date パラメータが効かず**（指定しても全期間が返る）、
     # from/to でしか絞れないため range モード
     'investor_types':  ('/equities/investor-types', None, '2008-01-01', 'range'),
+    # 🔴 EDINET 系（台帳 B-11 は「V2パス未特定」としていたが実在する）。
+    # bulk 非対応なので日次 API で取る。履歴が短い点に注意:
+    #   大株主 2016頃〜 / 政策保有 2018-2020頃〜 / 大量保有 2021-2023頃〜
+    # 18年のバックテストには使えず、直近の検定用
+    'edinet_major':  ('/edinet/major-shareholders',        'date', '2015-01-01', 'date'),
+    'edinet_cross':  ('/edinet/cross-shareholdings',       'date', '2017-01-01', 'date'),
+    'edinet_large':  ('/edinet/large-volume-shareholders', 'date', '2020-01-01', 'date'),
 }
 
 
