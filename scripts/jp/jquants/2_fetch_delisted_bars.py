@@ -23,6 +23,7 @@ import logging
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _jq_client import Client, JQuantsError
+from _jq_rates import interval_for, check_budget
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -31,8 +32,7 @@ DATA_ROOT = os.path.join('data', 'jquants')
 DELISTED_JSON = os.path.join(DATA_ROOT, 'delisted_codes.json')
 OUT_DIR = os.path.join(DATA_ROOT, 'delisted_bars')
 
-# bars/daily は間隔3秒で199銘柄を完走した実測がある
-BARS_INTERVAL = 3.0
+BARS_INTERVAL = interval_for('delisted_bars')
 
 
 def main():
@@ -54,7 +54,8 @@ def main():
 
     logging.info('=' * 60)
     logging.info(f'廃止銘柄の日次4本値: {len(codes):,} 銘柄  '
-                 f'（間隔{BARS_INTERVAL}s → 最短 {len(codes) * BARS_INTERVAL / 3600:.1f} 時間）')
+                 f'レート {60 / BARS_INTERVAL:.0f}/分 → 最短 {len(codes) * BARS_INTERVAL / 60:.0f} 分'
+                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
     logging.info('=' * 60)
 
     os.makedirs(OUT_DIR, exist_ok=True)

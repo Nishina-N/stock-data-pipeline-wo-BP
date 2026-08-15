@@ -28,15 +28,17 @@ import logging
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _jq_client import Client, JQuantsError
 from _jq_bydate import fetch_by_date, load_business_days
+from _jq_rates import interval_for, check_budget
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
-# dataset -> (APIパス, 日付パラメータ名, 実測の開始日, 呼び出し間隔)
+# dataset -> (APIパス, 日付パラメータ名, 実測の開始日)
+# 呼び出し間隔は _jq_rates.py が一元管理する（プラン上限500/分の配分）
 DATASETS = {
-    'fins_summary': ('/fins/summary',      'date', '2008-07-01', 3.0),
+    'fins_summary': ('/fins/summary',      'date', '2008-07-01'),
     # 2015-01〜03 は 200 で 0 件が返る。実データは 2015-04-01 から
-    'breakdown':    ('/markets/breakdown', 'date', '2015-04-01', 3.0),
+    'breakdown':    ('/markets/breakdown', 'date', '2015-04-01'),
 }
 
 
@@ -48,7 +50,8 @@ def main():
     ap.add_argument('--end', default=None, help='終了日を上書き')
     args = ap.parse_args()
 
-    path, date_param, default_start, interval = DATASETS[args.dataset]
+    path, date_param, default_start = DATASETS[args.dataset]
+    interval = interval_for(args.dataset)
     start = args.start or default_start
 
     try:
@@ -63,7 +66,8 @@ def main():
 
     logging.info('=' * 60)
     logging.info(f'{args.dataset}: {len(days):,} 営業日  {days[0]}..{days[-1]}')
-    logging.info(f'  間隔{interval}s → 最短 {len(days) * interval / 3600:.1f} 時間')
+    logging.info(f'  レート {60 / interval:.0f}/分 → 最短 {len(days) * interval / 60:.0f} 分'
+                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
     logging.info('=' * 60)
 
     client = Client(min_interval=interval)

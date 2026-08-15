@@ -9,10 +9,10 @@ V2 の要点（2026-08-15 実測）:
     ダッシュボード発行の API キーをヘッダに載せるだけになった。
   - ベースは https://api.jquants.com/v2
 
-レート制限は系統ごとに違う（実測）:
-  - /equities/master        … 間隔6秒でも5回目に 429
-  - /equities/bars/daily    … 間隔3秒で199銘柄を完走・429なし
-そのため呼び出し側が `min_interval` を指定できるようにし、429 は指数バックオフで待つ。
+レート制限は `_jq_rates.py` に一元化してある（公式仕様ベース）。
+Premium は 500 req/分（アカウント全体）で、`/fins/summary` と `/fins/details` のみ
+プランに関わらず 60 req/分の個別上限。呼び出し側が `min_interval` を渡す。
+429 は指数バックオフで待つ（遮断が5分程度あり得るため上限 360 秒）。
 
 契約範囲外の日付を指定すると 400 が返り、**本文に有効期間が書かれている**:
   {"message": "Your subscription covers the following dates: 2006-08-15 ~ ."}
@@ -104,9 +104,11 @@ class Client:
                 return r.json()
 
             if r.status_code == 429:
-                # レート制限。系統ごとに閾値が違うので待って伸ばす
+                # レート制限。公式仕様では「大幅超過を続けると5分程度アクセスが
+                # 完全遮断される」ため、上限は遮断時間より長い 360 秒まで伸ばす
+                # （120 秒で諦めると遮断明けを待てずにジョブが落ちる）
                 self.n_429 += 1
-                back = min(120, 5 * (2 ** attempt))
+                back = min(360, 10 * (2 ** attempt))
                 logging.warning(f'  429 {path} params={_safe(params)} '
                                 f'-> {back}s 待機 (attempt {attempt + 1})')
                 time.sleep(back)

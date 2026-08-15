@@ -27,6 +27,7 @@ from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _jq_client import Client, PRICE_START, JQuantsError
+from _jq_rates import interval_for, check_budget
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -36,8 +37,7 @@ MASTER_DIR = os.path.join(OUT_DIR, 'master')
 CALENDAR_JSON = os.path.join(OUT_DIR, 'calendar.json')
 DELISTED_JSON = os.path.join(OUT_DIR, 'delisted_codes.json')
 
-# master は間隔6秒でも5回目に 429 を返す実測があるため、他系統より広くとる
-MASTER_INTERVAL = 8.0
+MASTER_INTERVAL = interval_for('master')
 
 
 def fetch_calendar(client):
@@ -173,6 +173,8 @@ def main():
     client = Client(min_interval=MASTER_INTERVAL)
     logging.info('=' * 60)
     logging.info('J-QUANTS: calendar + master 月次スナップショット')
+    logging.info(f'  レート {60 / MASTER_INTERVAL:.0f}/分 '
+                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
     logging.info('=' * 60)
 
     cal = fetch_calendar(client)
@@ -188,7 +190,7 @@ def main():
         targets = targets[:args.limit]
         logging.info(f'DRY-RUN: 先頭 {len(targets)} 月のみ')
     logging.info(f'master 取得対象 {len(targets)} 月 '
-                 f'（間隔{MASTER_INTERVAL}s → 最短 {len(targets) * MASTER_INTERVAL / 60:.0f} 分）')
+                 f'（最短 {len(targets) * MASTER_INTERVAL / 60:.0f} 分）')
 
     try:
         fetch_master_snapshots(client, targets)
