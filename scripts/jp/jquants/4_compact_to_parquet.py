@@ -47,7 +47,71 @@ def discover_bydate_datasets():
     return out
 
 
+def discover_range_datasets():
+    """range モードで取得したデータセット（年ディレクトリを持たず、
+    直下に {start}_{end}.json を置くもの。investor_types）を検出する。"""
+    if not os.path.isdir(DATA_ROOT):
+        return []
+    out = []
+    for name in sorted(os.listdir(DATA_ROOT)):
+        d = os.path.join(DATA_ROOT, name)
+        if name.startswith('_') or not os.path.isdir(d):
+            continue
+        subs = os.listdir(d)
+        if any(s.isdigit() and len(s) == 4 for s in subs):
+            continue                      # by-date 側で拾う
+        if any(s.endswith('.json') for s in subs):
+            out.append(name)
+    return out
+
+
+def compact_range(dataset):
+    """{dataset}/*.json → _parquet/{dataset}.parquet（年分割しない）"""
+    files = sorted(glob.glob(os.path.join(DATA_ROOT, dataset, '*.json')))
+    rows = []
+    for fn in files:
+        with open(fn, encoding='utf-8') as f:
+            rows.extend(json.load(f))
+    if not rows:
+        logging.warning(f'{dataset}: 0件')
+        return 0
+    return _write(pd.DataFrame(rows), f'{dataset}.parquet')
+
+
+def _flatten_nested(df):
+    """dict / list を値に持つ列を JSON 文字列にする。
+
+    /fins/details の `FS` は 125 要素の入れ子辞書で、キーが XBRL のラベル文字列。
+    文書型ごとにキー集合が変わるため列に展開すると数千列のスパースになる。
+    JSON 文字列で 1 列に保持すれば欠落なく parquet に載り、
+    研究側は `json.loads` で必要な要素だけ取り出せる。
+    """
+    for col in df.columns:
+        s = df[col]
+        if s.dtype != object:
+            continue
+        sample = s.dropna()
+        if sample.empty:
+            continue
+        if isinstance(sample.iloc[0], (dict, list)):
+            df[col] = s.map(lambda v: json.dumps(v, ensure_ascii=False)
+                            if isinstance(v, (dict, list)) else v)
+            logging.info(f'    {col}: 入れ子 → JSON 文字列')
+            continue
+
+        # 数値と文字列が混在する列（/fins/dividend の DivRate は
+        # 数値と '-'(該当なし) が混ざる）。pyarrow が変換に失敗するため文字列へ統一する。
+        # '-' を null に潰すと「該当なし」と「欠測」の区別が消えるので潰さない。
+        # 研究側は pd.to_numeric(errors='coerce') で数値化する
+        types = set(sample.map(type))
+        if len(types) > 1:
+            df[col] = s.map(lambda v: v if v is None else str(v))
+            logging.info(f'    {col}: 型混在 {sorted(t.__name__ for t in types)} → 文字列')
+    return df
+
+
 def _write(df, rel_path):
+    df = _flatten_nested(df)
     out = os.path.join(OUT_ROOT, rel_path)
     os.makedirs(os.path.dirname(out), exist_ok=True)
     df.to_parquet(out, index=False)
@@ -127,6 +191,8 @@ def main():
     }
     for ds in discover_bydate_datasets():
         jobs[ds] = (lambda d=ds: compact_bydate(d))
+    for ds in discover_range_datasets():
+        jobs[ds] = (lambda d=ds: compact_range(d))
 
     targets = [args.only] if args.only else list(jobs)
     unknown = [t for t in targets if t not in jobs]

@@ -151,17 +151,32 @@ master Code 例: ['13010', '13050', '13060', ...]   桁数分布 {5}   末尾0�
 {"message": "Your subscription covers the following dates: 2006-08-15 ~ ."}
 ```
 
-## R2 レイアウト（2026-08-15 投入済み・52オブジェクト 835.6MB）
+## R2 レイアウト（2026-08-15 投入済み・119オブジェクト 1,353MB・1,884万行）
 
-| キー | 行数 | 期間 |
-|---|---|---|
-| `jp/jquants/calendar.json` | 7,305 | 2008-01-01..2027-12-31 |
-| `jp/jquants/delisted_codes.json` | 1,478 | — |
-| `jp/jquants/master_monthly.parquet` | 790,889 | 2008-05-30..2026-08-14 |
-| `jp/jquants/delisted_bars.parquet` | 2,686,931 | 2008-05-07..2026-08-12 |
-| `jp/jquants/fins_summary/{year}.parquet` | 364,080 | 2008-07-07..2026-08-14 |
-| `jp/jquants/breakdown/{year}.parquet` | 10,982,410 | 2015-04-01..2026-08-14 |
-| `jp/jquants/short_ratio/{year}.parquet` | 138,176 | 2010-01-04..2026-08-14 |
+| キー | 行数 | 実開始 | 内容 |
+|---|---|---|---|
+| `calendar.json` | 7,305 | 2008-01-01 | HolDiv 付き（2027-12-31まで） |
+| `delisted_codes.json` | 1,478 | — | master から導出した廃止銘柄 |
+| `master_monthly.parquet` | 790,889 | 2008-05-30 | 月末営業日の上場銘柄一覧 |
+| `delisted_bars.parquet` | 2,686,931 | 2008-05-07 | 廃止銘柄の日次4本値（UL/LL/MktCap 付） |
+| `fins_summary/{year}.parquet` | 364,080 | 2008-07-07 | **DiscDate/DiscTime = 実発表日時** |
+| `fins_details/{year}.parquet` | 264,435 | 2009-01 | BS/PL/CF。FS は JSON 文字列 |
+| `dividend/{year}.parquet` | 302,627 | 2013-01 | ExDate（権利落ち日）付き |
+| `breakdown/{year}.parquet` | 10,982,410 | 2015-04-01 | 売買内訳（現物/信用新規/信用返済） |
+| `short_ratio/{year}.parquet` | 138,176 | 2010-01-04 | **価格規制あり/なし**（33業種単位） |
+| `margin_interest/{year}.parquet` | 2,733,428 | **2012-02-10** | 週末残高（**金曜のみ**）。制度/一般別 |
+| `margin_alert/{year}.parquet` | 576,964 | 2008-05 | 日々公表。PubReason にフラグ |
+| `investor_types.parquet` | 4,338 | 2008-01-04 | 投資部門別（週次・年分割なし） |
+
+### 保存時の型の扱い
+
+- **入れ子（dict/list）は JSON 文字列にする**。`/fins/details` の `FS` は
+  125要素前後の辞書でキーが XBRL のラベル文字列。2025年単年で**のべ2,632種類**あり、
+  列に展開すると巨大なスパースになる。`json.loads` で復元できる。
+- **数値と文字列が混在する列は文字列に統一する**。`/fins/dividend` の `DivRate` 等は
+  数値と `'-'`（該当なし）が混ざり、そのままでは pyarrow が落ちる。
+  `'-'` を null に潰すと「該当なし」と「欠測」の区別が消えるため潰さない。
+  利用側は `pd.to_numeric(errors='coerce')`（`DivRate` は 92.1% が数値）。
 
 ## 取得結果から分かったこと（研究側への申し送り）
 
@@ -227,6 +242,39 @@ MrgnSellNewVa/MrgnBuyNewVa(信用新規)  MrgnSellCloseVa/MrgnBuyCloseVa(信用�
 `earningsDate` 充足率が 17-39% と最も悪い 2008-2013 と重なるため、
 **データが最も悪い期間で DocType フィルタの効きが最も大きい**。
 `DocType` と `DiscTime` は R2 に保持済み（36.4万件で欠損ゼロ）。
+
+### 5. 🔴 fins/details でも OCF の穴は埋まりきらない（開示制度の問題）
+
+台帳 B-1 は「FCF/OCF の 71.6% ゼロ潰れ解消」を魅力に挙げるが、
+**開示自体にキャッシュフロー計算書が付かない四半期が大半**（2025年で実測）:
+
+| 四半期 | 件数 | OCF 被覆 |
+|---|---|---|
+| 1Q | 4,044 | **5.9%** |
+| 2Q | 3,933 | 75.7% |
+| 3Q | 4,060 | **6.2%** |
+| FY | 4,392 | 92.6% |
+| 全体 | | 45.9% |
+
+日本の四半期開示では CF 計算書が 2Q と FY にしか付かないのが通例。
+つまり FMP の「71.6% ゼロ潰れ」の相当部分は **FMP の欠陥ではなく制度**であり、
+J-Quants に替えても 1Q/3Q は埋まらない。埋まるのは「2Q・FY で FMP が
+落としていた分」だけ。OCF/FCF は四半期系列ではなく**年2回の観測**として扱うこと。
+
+### 6. margin-interest は金曜のみ / 実開始は 2012-02-10
+
+週末残高なので月〜木は 200 で 0 件しか返らない（2025-06-23〜26 は全て 0、27(金) で 4,264）。
+全営業日を叩くと 8 割が空振りになるため friday モードで取得する（4,471 → 830 回）。
+実データの開始は **2012-02-10**（2010-01-01 から 117 金曜ぶんは空）。
+
+`ShrtVol`(売り残) が `ShrtStdVol`(制度信用) と `ShrtNegVol`(一般信用) に分解される。
+
+### 7. margin-alert の PubReason で日々公表銘柄が直接特定できる
+
+`PubReason` は入れ子で、`DailyPublication` / `Restricted` / `Monitoring` /
+`RestrictedByJSF` / `PrecautionByJSF` / `UnclearOrSecOnAlert` のフラグを持つ。
+台帳 B-5 が「価格乖離だけの粗いプロキシ（25日MA+30%乖離3日連続）で近似して止めた」
+日々公表銘柄が、これで実測に置き換わる（2025年で 7,244 件が DailyPublication=1）。
 
 ## スクリプト
 

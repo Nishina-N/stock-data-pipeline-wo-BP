@@ -40,12 +40,17 @@ PLAN_LIMIT_PER_MIN = 500
 
 # 実際に使うレート（req/分）。合計が PLAN_LIMIT_PER_MIN を超えないこと。
 RATES_PER_MIN = {
-    'master':        120,
-    'delisted_bars': 120,
-    'breakdown':     120,
-    'short_ratio':   120,
-    # /fins/summary はプランに関わらず 60/分の個別上限。margin を見て 57
-    'fins_summary':   57,
+    'master':          120,
+    'delisted_bars':   120,
+    'breakdown':       120,
+    'short_ratio':     120,
+    'dividend':        120,
+    'margin_interest': 120,
+    'margin_alert':    120,
+    'investor_types':  120,
+    # /fins/summary と /fins/details はプランに関わらず 60/分の個別上限。margin を見て 57
+    'fins_summary':     57,
+    'fins_details':     57,
 }
 
 # エンドポイント個別上限（プランに関わらず適用）

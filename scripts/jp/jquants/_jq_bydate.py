@@ -69,6 +69,25 @@ def fetch_by_date(client, dataset, path, days, date_param='date',
     return got, skipped, empty
 
 
+def fetch_range(client, dataset, path, start, end, params_key=('from', 'to')):
+    """from/to で一括取得する系統（investor-types）。ページングは client が辿る。
+
+    日付パラメータが効かず期間指定でしか引けないため、by-date とは別扱いにする。
+    """
+    out = os.path.join(DATA_ROOT, dataset, f'{start}_{end}.json')
+    if os.path.exists(out):
+        logging.info(f'  {dataset}: キャッシュ済み')
+        return 0, 1, 0
+
+    p = {params_key[0]: start, params_key[1]: end}
+    rows = client.get(path, p)
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    with open(out, 'w', encoding='utf-8') as f:
+        json.dump(rows, f, ensure_ascii=False)
+    logging.info(f'  {dataset}: {len(rows):,} 件  {start}..{end}')
+    return 1, 0, (1 if not rows else 0)
+
+
 def load_business_days(start=None, end=None):
     """1_fetch_calendar_master.py が保存したカレンダーから営業日を得る。
 
