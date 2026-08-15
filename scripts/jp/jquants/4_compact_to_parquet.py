@@ -27,7 +27,24 @@ logging.basicConfig(level=logging.INFO,
 DATA_ROOT = os.path.join('data', 'jquants')
 OUT_ROOT = os.path.join(DATA_ROOT, '_parquet')
 
-BYDATE_DATASETS = ['fins_summary', 'breakdown']
+def discover_bydate_datasets():
+    """日付単位で取得したデータセットを **ディレクトリ構造から自動検出** する。
+
+    ここに名前を列挙すると 3_fetch_bydate_series.py の DATASETS との二重管理になり、
+    片方に追加したときにもう片方が取りこぼす（実際に short_ratio で踏んだ）。
+    `data/jquants/{dataset}/{YYYY}/` という形をしているものを拾う。
+    """
+    if not os.path.isdir(DATA_ROOT):
+        return []
+    out = []
+    for name in sorted(os.listdir(DATA_ROOT)):
+        d = os.path.join(DATA_ROOT, name)
+        if name.startswith('_') or not os.path.isdir(d):
+            continue
+        # 年ディレクトリ（4桁）を持つものだけ
+        if any(sub.isdigit() and len(sub) == 4 for sub in os.listdir(d)):
+            out.append(name)
+    return out
 
 
 def _write(df, rel_path):
@@ -108,7 +125,7 @@ def main():
         'master': compact_master,
         'delisted_bars': compact_delisted_bars,
     }
-    for ds in BYDATE_DATASETS:
+    for ds in discover_bydate_datasets():
         jobs[ds] = (lambda d=ds: compact_bydate(d))
 
     targets = [args.only] if args.only else list(jobs)

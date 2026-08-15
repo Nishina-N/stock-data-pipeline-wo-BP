@@ -174,7 +174,7 @@ def main():
     logging.info('=' * 60)
     logging.info('J-QUANTS: calendar + master 月次スナップショット')
     logging.info(f'  レート {60 / MASTER_INTERVAL:.0f}/分 '
-                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
+                 f'（設定合計 {check_budget()}/分・同時実行は Premium 500/分以内に収める）')
     logging.info('=' * 60)
 
     cal = fetch_calendar(client)

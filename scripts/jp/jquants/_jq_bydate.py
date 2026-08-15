@@ -28,6 +28,9 @@ def fetch_by_date(client, dataset, path, days, date_param='date',
 
     戻り値: (取得した日数, スキップした日数, 空だった日数)
     """
+    from datetime import datetime
+    today = datetime.now().strftime('%Y-%m-%d')
+
     got = skipped = empty = 0
     total = len(days)
     t0 = time.monotonic()
@@ -42,8 +45,14 @@ def fetch_by_date(client, dataset, path, days, date_param='date',
         params[date_param] = date
         rows = client.get(path, params)
 
+        # 未来日の空応答はキャッシュしない。書くとその日が到来しても
+        # 「取得済み」と見なされ、二度と埋まらなくなる
+        if not rows and date > today:
+            empty += 1
+            continue
+
         os.makedirs(os.path.dirname(out), exist_ok=True)
-        # 空でも書く（未取得と区別するため）
+        # 空でも書く（過去日なら「元々データ無し」が確定するため、未取得と区別する）
         with open(out, 'w', encoding='utf-8') as f:
             json.dump(rows, f, ensure_ascii=False)
         got += 1
@@ -61,7 +70,14 @@ def fetch_by_date(client, dataset, path, days, date_param='date',
 
 
 def load_business_days(start=None, end=None):
-    """1_fetch_calendar_master.py が保存したカレンダーから営業日を得る。"""
+    """1_fetch_calendar_master.py が保存したカレンダーから営業日を得る。
+
+    🔴 end を省いたときは **今日** で止める。カレンダーは2年先（2027-12-31）まで
+    入っているため、上限を切らないと未来日まで取得しに行き、しかも空応答を
+    キャッシュとして書いてしまう。そうなるとその日が実際に到来しても
+    「取得済み」と見なされ、二度と埋まらない。
+    """
+    from datetime import datetime
     cal_path = os.path.join(DATA_ROOT, 'calendar.json')
     if not os.path.exists(cal_path):
         raise JQuantsError('先に 1_fetch_calendar_master.py を実行してください '
@@ -75,5 +91,6 @@ def load_business_days(start=None, end=None):
                              '1_fetch_calendar_master.py'))
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
-    days = mod.business_days(cal, start or '0000-00-00', end or '9999-99-99')
+    today = datetime.now().strftime('%Y-%m-%d')
+    days = mod.business_days(cal, start or '0000-00-00', end or today)
     return days

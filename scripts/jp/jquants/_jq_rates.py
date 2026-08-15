@@ -26,8 +26,13 @@
     breakdown     120/分
     delisted_bars 120/分
     master        120/分
+    short_ratio   120/分
     ----------------------------------------
-    合計          417/分  < Premium 500
+    合計          537/分  > Premium 500 ⚠
+
+⚠ 全ジョブを**同時に**走らせると上限を超える。実際には master と delisted_bars は
+  短時間で終わるため、同時実行するのは2〜3ジョブ。`check_budget()` は設定の
+  合計を返すだけにして、同時実行の制御は運用側（起動の順序）で行う。
 """
 
 # アカウント全体の上限（Premium）
@@ -38,6 +43,7 @@ RATES_PER_MIN = {
     'master':        120,
     'delisted_bars': 120,
     'breakdown':     120,
+    'short_ratio':   120,
     # /fins/summary はプランに関わらず 60/分の個別上限。margin を見て 57
     'fins_summary':   57,
 }
@@ -56,10 +62,16 @@ def interval_for(job):
 
 
 def check_budget():
-    """設定値がプラン上限に収まっているかを確認する（起動時の自己点検用）。"""
-    total = sum(RATES_PER_MIN.values())
-    if total > PLAN_LIMIT_PER_MIN:
-        raise ValueError(
-            f'RATES_PER_MIN の合計 {total}/分 が Premium 上限 '
-            f'{PLAN_LIMIT_PER_MIN}/分 を超えています')
-    return total
+    """全ジョブのレート合計を返す（起動時のログ用）。
+
+    合計はプラン上限を超え得る。全ジョブを同時に走らせない前提のため
+    例外にはしない（超えたら 429 → バックオフで自動的に減速する）。
+    同時に走らせてよい組み合わせは `max_concurrent_rate()` で確認する。
+    """
+    return sum(RATES_PER_MIN.values())
+
+
+def budget_ok(jobs):
+    """同時に走らせるジョブ名の集合がプラン上限に収まるか。"""
+    total = sum(RATES_PER_MIN[j] for j in jobs)
+    return total <= PLAN_LIMIT_PER_MIN, total

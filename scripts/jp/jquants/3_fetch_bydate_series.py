@@ -6,12 +6,21 @@
                  Premium の必須理由②。現行パネルの earningsDate は 2008-2013 で
                  充足率 17-39% しかなく残りは「会計期末+45日」の近似で、
                  その代償が実測で GEO -281pp（研究側ログ）。
-  breakdown    … /markets/breakdown  売買内訳。信用新規売りと買い戻しが別項目で、
-                 51単元(5,100株)の価格規制対象かどうかも分かれる（A-2）。
+  breakdown    … /markets/breakdown  売買内訳。現物売買 / 信用新規 / 信用返済 が
+                 銘柄別・日次で分解される（A-2）。
+  short_ratio  … /markets/short-ratio 空売り比率。**価格規制あり/なし の区分**。
+
+🔴 台帳 A-2 の訂正（2026-08-15 実測）:
+   「breakdown で信用新規売りが価格規制あり/なしに分かれる＝51単元(5,100株)規制を
+   実測できる」は**誤り**。breakdown の16列に規制の区分は無い:
+     LongSellVa/LongBuyVa(現物) ShrtNoMrgnVa(現物空売り)
+     MrgnSellNewVa/MrgnBuyNewVa(信用新規) MrgnSellCloseVa/MrgnBuyCloseVa(信用返済)
+   価格規制の区分は short-ratio 側の ShrtWithResVa / ShrtNoResVa にしか無く、
+   しかも **33業種単位で銘柄別ではない**。MAXLOT 50 近似の検証は業種粒度が上限。
 
 実測の開始年（2026-08-15）:
-  fins_summary 2008-08〜 / breakdown 2015〜
-台帳は breakdown を「20年」としているが**実際は11年**で、in-sample 前半には掛からない。
+  fins_summary 2008-08〜 / breakdown 2015-04-01〜 / short_ratio 2010〜
+台帳は breakdown を「20年」としているが**実際は11.4年**で、in-sample 前半には掛からない。
 
 出力: data/jquants/{dataset}/{YYYY}/{YYYY-MM-DD}.json （1営業日1ファイル・再開可能）
 
@@ -39,6 +48,10 @@ DATASETS = {
     'fins_summary': ('/fins/summary',      'date', '2008-07-01'),
     # 2015-01〜03 は 200 で 0 件が返る。実データは 2015-04-01 から
     'breakdown':    ('/markets/breakdown', 'date', '2015-04-01'),
+    # 空売り比率。**価格規制あり/なし の区分はここにしか無い**（breakdown には無い）。
+    # ただし 33業種単位で銘柄別ではないため、51単元(5,100株)規制の検証は
+    # 業種粒度が上限になる。1日34行（33業種＋計）と極小
+    'short_ratio':  ('/markets/short-ratio', 'date', '2010-01-01'),
 }
 
 
@@ -67,7 +80,7 @@ def main():
     logging.info('=' * 60)
     logging.info(f'{args.dataset}: {len(days):,} 営業日  {days[0]}..{days[-1]}')
     logging.info(f'  レート {60 / interval:.0f}/分 → 最短 {len(days) * interval / 60:.0f} 分'
-                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
+                 f'（設定合計 {check_budget()}/分・同時実行は Premium 500/分以内に収める）')
     logging.info('=' * 60)
 
     client = Client(min_interval=interval)

@@ -55,7 +55,7 @@ def main():
     logging.info('=' * 60)
     logging.info(f'廃止銘柄の日次4本値: {len(codes):,} 銘柄  '
                  f'レート {60 / BARS_INTERVAL:.0f}/分 → 最短 {len(codes) * BARS_INTERVAL / 60:.0f} 分'
-                 f'（全ジョブ合計 {check_budget()}/分 < Premium 500/分）')
+                 f'（設定合計 {check_budget()}/分・同時実行は Premium 500/分以内に収める）')
     logging.info('=' * 60)
 
     os.makedirs(OUT_DIR, exist_ok=True)
