@@ -1,0 +1,69 @@
+name: J-Quants Daily Update
+
+# 東証の4本値は 16:30 頃に確定する。10分の余裕を見て 16:40 JST に走らせる。
+# JST 16:40 = UTC 07:40。GitHub Actions の cron は UTC 固定（DST の影響なし）。
+#
+# 取得対象は **Light プランで引ける7系統**（bars_daily / fins_summary /
+# earnings_date / master / investor_types / topix / calendar）。
+# Standard 以上が必要な系統（breakdown, short-ratio, margin-*, fins/details,
+# dividend, indices, derivatives, edinet）は 403 になるため触らない。
+# R2 上の既存ファイルはそのまま残る。プランを戻せば 1〜7 のスクリプトが
+# 取得済みの日をスキップして続きから埋める。
+
+on:
+  schedule:
+    - cron: '40 7 * * 1-5'   # UTC 07:40 = JST 16:40（月-金）
+  workflow_dispatch:
+    inputs:
+      lookback:
+        description: '何日前まで遡って未取得日を探すか'
+        required: false
+        default: '10'
+      dry_run:
+        description: 'true なら R2 に書かない'
+        required: false
+        default: 'false'
+
+# schedule と手動実行が重なると同じ parquet を read-modify-write して
+# 片方の追記が失われる。直列化する（進行中はキャンセルせず待たせる）。
+concurrency:
+  group: jquants-daily
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        timeout-minutes: 5
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+        timeout-minutes: 10
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+        timeout-minutes: 10
+
+      # 祝日は営業日が0件になり、スクリプトは何もせず正常終了する。
+      # 「休場日に走った」ことは失敗ではないので、ここで日付を弾く必要はない。
+      - name: Daily update to R2
+        env:
+          JQUANTS_API_KEY: ${{ secrets.JQUANTS_API_KEY }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+          PYTHONUTF8: '1'
+        run: |
+          python scripts/jp/jquants/8_daily_update.py \
+            --lookback "${{ github.event.inputs.lookback || '10' }}" \
+            ${{ github.event.inputs.dry_run == 'true' && ' ' || '--execute' }}
+        timeout-minutes: 20
