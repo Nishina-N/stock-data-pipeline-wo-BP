@@ -89,6 +89,16 @@ PLAN_GATED_COLUMNS = {
 }
 
 
+# 🔴 R2 の履歴が **bulk CSV 由来**の系統。欠測が NaN で入っている一方、
+# API(JSON) は空文字 `''` を返すため、そのまま追記すると同じ列に2種類の
+# 欠測表現が混ざる（earnings_date.SchDate = 発表予定日が未定の行で実際に発生）。
+# 追記側を None に寄せて揃える。
+#
+# 他の系統は履歴も API(JSON) 由来なので `''` で統一されている。逆向きに
+# 変換すると既存とずれるため、ここに挙げたものだけを対象にする。
+EMPTY_AS_NULL = {'earnings_date'}
+
+
 def bucket():
     return os.environ.get('R2_BUCKET_NAME', 'stock-data')
 
@@ -152,6 +162,11 @@ def align(old, new, name):
         (logging.info if known else logging.warning)(msg)
         for c in missing:
             new[c] = None
+    if name in EMPTY_AS_NULL:
+        for c in new.columns:
+            if new[c].dtype == object:
+                new[c] = new[c].map(lambda v: None if v == '' else v)
+
     for c in old.columns:
         if c in new.columns and new[c].dtype != old[c].dtype:
             try:
@@ -212,14 +227,23 @@ def update_bydate(client, name, days, execute):
         key = f'{PREFIX}/{key_tpl.format(year=year)}'
         df = read_parquet(key)
         if df is None:
-            logging.error(f'  ✗ {name}: {key} が R2 にありません。'
-                          f'年初は 4→5 のフルパスで作成してください')
-            return False
+            # 年が変わった最初の実行。前年のファイルから**列と dtype だけ**を
+            # 引き継いだ空フレームを作る。ここで前年を土台にしないと、
+            # 1月最初の応答だけから列構成が決まってしまい、その日たまたま
+            # 全銘柄 null だった列が落ちて前年とスキーマがずれる。
+            prev = read_parquet(f'{PREFIX}/{key_tpl.format(year=str(int(year) - 1))}')
+            if prev is None:
+                logging.error(f'  ✗ {name}: {key} も前年のファイルも R2 に'
+                              f'ありません。1〜5 のフルパスで作成してください')
+                return False
+            df = prev.iloc[0:0].reset_index(drop=True)
+            logging.info(f'{name} {year}: 新年のファイルを前年の構成で新規作成'
+                         f'（{len(df.columns)}列）')
         have = set(df[date_col].astype(str))
         todo = [d for d in days if d[:4] == year and d not in have]
         if not todo:
             logging.info(f'{name} {year}: 追加なし（{len(df):,}行 / 最新 '
-                         f'{max(have)}）')
+                         f'{max(have) if have else "-"}）')
             continue
 
         logging.info(f'{name} {year}: {len(todo)} 日 未取得 {todo}')
