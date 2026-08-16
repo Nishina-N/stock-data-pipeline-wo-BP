@@ -83,10 +83,17 @@ def main():
     ap.add_argument('--execute', action='store_true', help='実際に投入する')
     ap.add_argument('--skip-existing', action='store_true',
                     help='R2 に既にあるキーは上書きしない')
+    ap.add_argument('--only', default=None,
+                    help='特定データセットのみ投入（カンマ区切り。再圧縮後の差し替え用）')
     args = ap.parse_args()
 
     bucket = os.environ.get('R2_BUCKET_NAME', 'stock-data')
     items = collect()
+    if args.only:
+        want = {n.strip() for n in args.only.split(',') if n.strip()}
+        items = [(p, k) for p, k in items
+                 if k.split('/')[2].split('.')[0] in want]
+        logging.info(f'--only {sorted(want)} → {len(items)} ファイル')
     if not items:
         logging.error(f'投入対象がありません。先に 4_compact_to_parquet.py を実行してください')
         return False

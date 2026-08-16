@@ -81,7 +81,19 @@ def compact_bulk(dataset):
             continue
         # CSV は全て文字列で読んでいるので、数値化できる列は数値へ戻す
         # （'-' 等が混ざる列は文字列のまま残る＝JSON 経由の系統と同じ扱い）
+        #
+        # 🔴 ただし**先頭ゼロを持つ列は数値化しない**。ゼロ埋めのコードであって
+        #    数値ではないため、変換すると桁が落ちて別物になる。実際に踏んだ:
+        #      earnings_date.FYE       '0120'(決算期末MMDD) → 120
+        #      futures.EmMrgnTrgDiv    '02'                → 2
+        #      options225.EmMrgnTrgDiv '02'                → 2
+        #    indices.Code は '002A' のような英数字が混ざっていたため
+        #    数値化に失敗して偶然無事だった（運に頼らないこと）
         for c in df.columns:
+            s = df[c].dropna()
+            if s.astype(str).str.match(r'^-?0\d').any():
+                logging.info(f'    {c}: 先頭ゼロあり → 文字列のまま保持')
+                continue
             conv = pd.to_numeric(df[c], errors='coerce')
             if conv.notna().sum() == df[c].notna().sum() and conv.notna().any():
                 df[c] = conv
