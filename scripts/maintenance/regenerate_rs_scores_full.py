@@ -80,6 +80,7 @@ MARKETS = {
         'universe': 'jp/metadata/target_stocks_jp_latest.csv',
         'snapshot': 'jp/metadata/snapshots/target_stocks_jp_{stamp}.csv',
         'out':      os.path.join(DATA_FOLDER, 'regen_rs_scores_jp'),
+        'out_pit':  os.path.join(DATA_FOLDER, 'regen_rs_scores_jp_pit'),
         'csv':      os.path.join(DATA_FOLDER, 'target_stocks_jp_latest.csv'),
     },
 }
@@ -217,7 +218,71 @@ def load_weights(symbols, bucket):
     return weights
 
 
-def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
+
+# ---------------------------------------------------------------------------
+# 時点対応の分類（JP のみ）
+# ---------------------------------------------------------------------------
+# 🔴 銘柄の sector/industry は事業転換で実際に変わる。既定では**現在の**
+#    ユニバースCSVを全歴史に当てており、これは look-ahead。
+#    JP は J-Quants の月次マスタ（jp/jquants/master_monthly.parquet,
+#    2008-05〜, 220スナップショット）に当時の S17/S33 があるので、
+#    --classification pit でその日以前の直近スナップショットを使える。
+#    US には同等の履歴が存在しない（core・CSV・FMP いずれも現在値）。
+JQ_MASTER_KEY = 'jp/jquants/master_monthly.parquet'
+
+# master のラベルは現行CSVと表記が違う。**群のキーを変えないため**正規化する
+# （半角中黒 '･' → '・' のうえ、下の2つだけ語自体が異なる）。
+# 正規化後は現行CSVと 100.00% 一致することを確認済み。
+PIT_LABEL_FIX = {
+    'sector':   {'電気・ガス': '電力・ガス'},
+    'industry': {'証券・商品先物取引業': '証券、商品先物取引業'},
+}
+# ETF・投資信託のバケット。現行CSVの17/33分類には無いので群に含めない
+PIT_EXCLUDE = {'その他'}
+
+
+def load_pit_classification(bucket):
+    """{snapshot_date: {code4: {'sector':.., 'industry':..}}} を返す。"""
+    import io
+    raw = create_s3_client().get_object(Bucket=bucket, Key=JQ_MASTER_KEY)['Body'].read()
+    m = pd.read_parquet(io.BytesIO(raw))[['Date', 'Code', 'S17Nm', 'S33Nm']].dropna()
+    m['code4'] = m['Code'].astype(str).str[:4]
+    for col, key in (('S17Nm', 'sector'), ('S33Nm', 'industry')):
+        m[key] = (m[col].str.replace('･', '・', regex=False)
+                  .replace(PIT_LABEL_FIX[key]))
+    out = {}
+    for date, g in m.groupby('Date'):
+        out[date] = {r.code4: {'sector': r.sector, 'industry': r.industry}
+                     for r in g.itertuples()}
+    logging.info(f'時点分類: {len(out)} スナップショット '
+                 f'{min(out)} .. {max(out)}')
+    return out
+
+
+def segments_for(dates, snapshots):
+    """営業日リストを、適用スナップショットごとの区間に分ける。
+
+    as-of: その日**以前**で最も新しいスナップショットを使う。
+    🔴 最古スナップショット(2008-05-30)より前の日は、最古で代用するしかない。
+       JP の RS は 2004 から始まるので 2004-01〜2008-04 は時点対応にならない。
+       ここを黙って現在分類にすると誤差の性質が年で変わるため、最古で固定する。
+    """
+    import bisect
+    snaps = sorted(snapshots)
+    out = defaultdict(list)
+    for d in sorted(dates):
+        d = str(d)[:10]
+        # bisect_right - 1 = その日以前で最も新しいスナップショット。
+        # 🔴 走査位置 i を使い回す実装だと、日付が str と Timestamp で
+        #    混ざったときに比較が壊れて全日が最古に落ちる（2004年が
+        #    248日→8日になった）。毎回二分探索する。
+        k = bisect.bisect_right(snaps, d) - 1
+        out[snaps[max(k, 0)]].append(d)
+    return out
+
+
+def build_year(per_symbol, weights, symbols_info, group_key, weight_mode,
+               pit=None):
     """1年ぶんのレコードを作る。戻り値: (records, 診断dict)"""
     group_symbols = defaultdict(list)
     for sym in per_symbol:
@@ -254,25 +319,66 @@ def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
             {s: float(weights.get(s, 1)) for s in rs_df.columns},
             index=rs_df.index)
 
-    group_raw = {}
-    eff_counts = {}
-    for g, syms in group_symbols.items():
-        sub = rs_df[syms]
-        wg = w_df[syms]
-        valid = sub.notna() & wg.notna()
-        numer = (sub * wg).where(valid).sum(axis=1)
-        denom = wg.where(valid).sum(axis=1)
-        # 🔴 該当銘柄0件の群は NaN = その日の順位付けに参加しない
-        group_raw[g] = numer / denom.replace(0, np.nan)
-        eff_counts[g] = valid.sum(axis=1)
+    def aggregate(members, rows):
+        """{group: [sym]} と対象日で、生値と有効銘柄数を返す。"""
+        raw, eff = {}, {}
+        for g, syms in members.items():
+            syms = [c for c in syms if c in rs_df.columns]
+            if not syms:
+                continue
+            sub = rs_df.loc[rows, syms]
+            wg = w_df.loc[rows, syms]
+            valid = sub.notna() & wg.notna()
+            numer = (sub * wg).where(valid).sum(axis=1)
+            denom = wg.where(valid).sum(axis=1)
+            # 🔴 該当銘柄0件の群は NaN = その日の順位付けに参加しない
+            raw[g] = numer / denom.replace(0, np.nan)
+            eff[g] = valid.sum(axis=1)
+        return raw, eff
 
-    if not group_raw:
+    if pit is None:
+        group_raw, eff_counts = aggregate(group_symbols, rs_df.index)
+        stock_count_by_date = None
+    else:
+        # 🔴 スナップショットごとに構成銘柄が変わる。区間に切って集計し、
+        #    縦に積む。percentile は日ごとに計算するので、区間で群の集合が
+        #    違っても（外部結合で NaN になり）その日の順位付けから外れるだけ。
+        parts_raw, parts_eff = [], []
+        stock_count_by_date = {}
+        for snap, days in segments_for(rs_df.index, pit.keys()).items():
+            table = pit[snap]
+            members = defaultdict(list)
+            for sym in rs_df.columns:
+                info = table.get(str(sym)[:4])
+                if not info:
+                    continue
+                g = info.get(group_key)
+                if g and g not in PIT_EXCLUDE:
+                    members[g].append(sym)
+            raw, eff = aggregate(members, days)
+            if not raw:
+                continue
+            parts_raw.append(pd.DataFrame(raw))
+            parts_eff.append(pd.DataFrame(eff))
+            cnt = {g: len(v) for g, v in members.items()}
+            for d in days:
+                stock_count_by_date[d] = cnt
+        if not parts_raw:
+            return [], {}
+        group_raw = pd.concat(parts_raw).sort_index()
+        eff_counts = pd.concat(parts_eff).sort_index()
+
+    if group_raw is None or (hasattr(group_raw, '__len__') and len(group_raw) == 0):
         return [], {}
 
-    df = pd.DataFrame(group_raw)
+    df = group_raw if isinstance(group_raw, pd.DataFrame) else pd.DataFrame(group_raw)
+    effective = (eff_counts if isinstance(eff_counts, pd.DataFrame)
+                 else pd.DataFrame(eff_counts)).reindex(df.index)
+    df = df.copy()
     df.index = pd.to_datetime(df.index)
+    effective.index = df.index
     df = df.sort_index()
-    effective = pd.DataFrame(eff_counts).reindex(pd.DataFrame(group_raw).index)
+    effective = effective.sort_index()
     pct = df.rank(axis=1, pct=True) * 98 + 1
 
     # stock_count は production と同じく symbols_info からの固定値
@@ -284,10 +390,14 @@ def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
 
     industry_to_sector = {}
     if group_key == 'industry':
-        for info in symbols_info.values():
-            ind = info.get('industry')
-            if ind and ind not in industry_to_sector:
-                industry_to_sector[ind] = info.get('sector', 'N/A')
+        # pit のときは分類も時点対応させる（新しい順に見て最後に勝った対応を残す）
+        srcs = ([t.values() for t in pit.values()] if pit
+                else [symbols_info.values()])
+        for src in srcs:
+            for info in src:
+                ind = info.get('industry')
+                if ind and ind not in PIT_EXCLUDE:
+                    industry_to_sector.setdefault(ind, info.get('sector', 'N/A'))
 
     records = []
     per_date_groups = []
@@ -303,7 +413,10 @@ def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
                 group_key: g,
                 'rs_percentile': round(float(v), 2),
                 'rank': int((row > v).sum() + 1),
-                'stock_count': stock_count.get(g, 0),
+                # pit のときは、その日に適用されたスナップショットでの本数
+                'stock_count': ((stock_count_by_date.get(date_str, {}).get(g, 0))
+                                if stock_count_by_date is not None
+                                else stock_count.get(g, 0)),
             }
             if group_key == 'industry':
                 rec['sector'] = industry_to_sector.get(g, 'N/A')
@@ -375,6 +488,11 @@ def compare_r2(bucket, group_key, year, records):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--market', choices=['us', 'jp'], default='us')
+    ap.add_argument('--classification', choices=['current', 'pit'], default='current',
+                    help='current: 現在のユニバースCSVの分類を全歴史に当てる（既定）/ '
+                         'pit: その日以前の直近スナップショットの分類を使う。'
+                         'JP のみ（J-Quants 月次マスタ 2008-05〜）。'
+                         'US には同等の履歴が無い')
     ap.add_argument('--years', required=True, help='例 1988-2026 / 2024 / 2024,2025')
     ap.add_argument('--build', action='store_true', help='ローカル生成のみ')
     ap.add_argument('--execute', action='store_true', help='生成後 R2 へ一括投入')
@@ -393,7 +511,7 @@ def main():
     global M, TARGET_STOCKS_CSV, OUT_ROOT, CORE_PREFIX, SCORES_PREFIX
     M = MARKETS[args.market]
     TARGET_STOCKS_CSV = M['csv']
-    OUT_ROOT = M['out']
+    OUT_ROOT = M['out_pit'] if (args.classification == 'pit' and 'out_pit' in M) else M['out']
     CORE_PREFIX = M['core']
     SCORES_PREFIX = M['scores']
 
@@ -402,7 +520,7 @@ def main():
 
     logging.info('=' * 60)
     logging.info(f'[{args.market}] RS_scores 全期間再生成  {years[0]}..{years[-1]} ({len(years)}年)  '
-                 f'weight={args.weight_mode}  '
+                 f'weight={args.weight_mode} class={args.classification}  '
                  f'{"EXECUTE" if args.execute else "BUILD/COMPARE"}')
     logging.info('=' * 60)
 
@@ -415,15 +533,18 @@ def main():
     if os.path.exists(marker):
         with open(marker, encoding='utf-8') as f:
             prev = json.load(f)
-        if prev.get('weight_mode') != args.weight_mode:
+        if (prev.get('weight_mode') != args.weight_mode
+                or prev.get('classification', 'current') != args.classification):
             logging.error(
-                f'既存の生成物は weight_mode={prev.get("weight_mode")} です。'
-                f'今回は {args.weight_mode}。混ぜられません。'
+                f'既存の生成物は weight_mode={prev.get("weight_mode")} / '
+                f'classification={prev.get("classification", "current")} です。'
+                f'今回は {args.weight_mode} / {args.classification}。混ぜられません。'
                 f'{OUT_ROOT} を消してから作り直してください')
             return False
     else:
         with open(marker, 'w', encoding='utf-8') as f:
-            json.dump({'weight_mode': args.weight_mode}, f)
+            json.dump({'weight_mode': args.weight_mode,
+                       'classification': args.classification}, f)
 
     symbols_info = download_universe(bucket)
     # 🔴 ユニバースCSVに ticker が NaN(float) の行が混ざっている。
@@ -435,6 +556,14 @@ def main():
             symbols_info.pop(k)
     symbols = sorted(symbols_info)
     logging.info(f'ユニバース {len(symbols):,} 銘柄')
+
+    pit = None
+    if args.classification == 'pit':
+        if args.market != 'jp':
+            logging.error('--classification pit は JP のみ。'
+                          'US には過去の分類履歴が存在しない')
+            return False
+        pit = load_pit_classification(bucket)
 
     weights = {}
     if args.weight_mode == 'latest':
@@ -462,7 +591,7 @@ def main():
         logging.info(f'  {year}: {len(per_symbol):,} 銘柄に rs_percentile あり')
         for gk in ('sector', 'industry'):
             records, diag = build_year(per_symbol, weights, symbols_info, gk,
-                                       args.weight_mode)
+                                       args.weight_mode, pit=pit)
             if not records:
                 logging.warning(f'  {year} {gk}: レコード0。スキップ')
                 continue
@@ -502,13 +631,15 @@ def main():
     manifest = {
         'generated': stamp,
         'weight_mode': args.weight_mode,
+        'classification': args.classification,
         'universe_snapshot': snap_key,
         'years': [min(y for v in produced.values() for y in v),
                   max(y for v in produced.values() for y in v)],
         'definition': (
             'group_raw = Σ(individual rs_percentile × その日の close×volume) / Σ(その日の close×volume); '
             'close/volume が欠ける銘柄はその日除外; 該当銘柄0件の群は順位付けに不参加; '
-            'rs_percentile = rank(axis=1, pct=True) × 98 + 1; rs_raw は出力しない'),
+            'rs_percentile = rank(axis=1, pct=True) × 98 + 1; rs_raw は出力しない; '
+            f'分類は {"その日以前の直近スナップショット(時点対応)" if args.classification == "pit" else "現在のユニバースCSV(全歴史に適用)"}'),
         'note': ('2026-08-17 の全期間再生成。これ以前の scores/RS_scores は '
                  '2024-01-02 を境に定義が2つ連結されており、重みも最新日の '
                  'close×volume（look-ahead かつ毎日履歴が変わる）だった'),
