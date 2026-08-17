@@ -126,6 +126,16 @@ def main():
         bucket = os.environ['R2_BUCKET_NAME']
         s3.upload_file(OUT_CSV, bucket, R2_KEY)
         logging.info(f"✅ Uploaded -> {R2_KEY}")
+
+        # 🔴 日付付きスナップショットも残す（2026-08-17 追加）。
+        # latest は上書き運用で過去版が消える。sector/industry RS の
+        # グループ構成はこのCSVに依存するので、これが無いとヴィンテージを
+        # 再現できない。銘柄の業種も実際に変わる（J-Quants 月次マスタの
+        # 実測で18年に S17 1.3% / S33 1.5%）。
+        from datetime import datetime as _dt
+        snap = f"jp/metadata/snapshots/target_stocks_jp_{_dt.now():%Y-%m-%d}.csv"
+        s3.upload_file(OUT_CSV, bucket, snap)
+        logging.info(f"✅ Snapshot -> {snap}")
     finally:
         s3.close()
     return True

@@ -4,4 +4,7 @@ yfinance==1.0.0
 numpy==1.26.3
 requests==2.31.0
 python-dotenv==1.0.0
+# jp/jquants の parquet 読み書きに必要（pandas は parquet を pyarrow に委譲する）。
+# ローカルと同じ版に固定しておく
+pyarrow==24.0.0
 xlrd==2.0.1

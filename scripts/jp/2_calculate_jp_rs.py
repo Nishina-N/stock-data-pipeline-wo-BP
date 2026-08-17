@@ -14,7 +14,8 @@ US の 3_calculate_rs.py と同一定義だが、フル履歴×全銘柄でも O
 
 RS 定義:
   individual raw = 3/6/9/12か月リターン(0.4/0.2/0.2/0.2 加重) → クロスセクション percentile(1-99)
-  group     raw = individual percentile を Close×Volume 加重平均 → グループ間で再 percentile
+  group     raw = individual percentile を **その日の** Close×Volume で加重平均
+                   → グループ間で再 percentile
 """
 import os
 import sys
@@ -84,14 +85,24 @@ def calc_individual_percentile(close, min_days=MIN_DAYS):
     return pct
 
 
-def calc_group_percentile(indiv_pct, weights, groups_of, group_name):
+def calc_group_percentile(indiv_pct, weight_df, groups_of, group_name):
     """
     グループ RS percentile 行列（dates × group）をベクトル化で計算。
-    group_rs[date,g] = Σ_{s∈g} pct[date,s]*w[s] / Σ_{s∈g, pct非NaN} w[s]
+    group_rs[date,g] = Σ_{s∈g} pct[date,s]*w[date,s] / Σ_{s∈g} w[date,s]
+
+    🔴 2026-08-17 変更。重みは **その日の Close×Volume（時点重み）**。
+       以前は「最新日の Close×Volume」を全期間に当てていたが、これは歴史日付に
+       将来の売買代金を当てる look-ahead であり、しかも直近の出来高が動くたびに
+       過去の値が変わる（US 側の実測では、同じコードを5日後に再実行しただけで
+       sector の 48.9% / industry の 90.9% のレコードが変わった）。
+       scripts/daily/3_calculate_rs.py および
+       scripts/maintenance/regenerate_rs_scores_full.py --weight-mode pointintime
+       と同一定義。片方だけ変えると当年に境目ができるので必ず揃えること。
+
+       pct か w のどちらかが欠ける銘柄はその日だけ分子・分母とも除外する
+       （重み1で代替すると売買代金加重に等加重が紛れて定義が濁る）。
     """
     logging.info(f"Calculating {group_name} RS (matrix, weighted)...")
-    cols = indiv_pct.columns
-    w = pd.Series({c: weights.get(c, 1.0) for c in cols})
 
     group_series = {}
     for g, members in groups_of.items():
@@ -99,9 +110,10 @@ def calc_group_percentile(indiv_pct, weights, groups_of, group_name):
         if not gcols:
             continue
         sub = indiv_pct[gcols]
-        wg = w[gcols]
-        numer = sub.multiply(wg, axis=1).sum(axis=1, skipna=True)
-        denom = sub.notna().multiply(wg, axis=1).sum(axis=1)
+        wg = weight_df[gcols]
+        valid = sub.notna() & wg.notna()
+        numer = (sub * wg).where(valid).sum(axis=1)
+        denom = wg.where(valid).sum(axis=1)
         group_series[g] = numer / denom.replace(0, np.nan)
 
     group_raw = pd.DataFrame(group_series)
@@ -130,13 +142,11 @@ def main():
 
     indiv_pct = calc_individual_percentile(close)
 
-    # 重み = 最新日の Close × Volume（US と同じ）
-    last_close = close.ffill().iloc[-1]
-    last_vol = volume.ffill().iloc[-1]
-    weights = {}
-    for c in indiv_pct.columns:
-        cp, vv = last_close.get(c), last_vol.get(c)
-        weights[c] = float(cp * vv) if pd.notna(cp) and pd.notna(vv) and cp * vv > 0 else 1.0
+    # 重み = **その日の** Close × Volume（時点重み。US と同じ定義）
+    # ffill しない。休場・未上場の日に直前の売買代金を持ち越すと、
+    # 実際には取引が無かった日に重みを与えることになる
+    weight_df = (close * volume).reindex(index=indiv_pct.index,
+                                         columns=indiv_pct.columns)
 
     # グループ構成
     sectors_of, industries_of = {}, {}
@@ -150,8 +160,8 @@ def main():
         if ind and pd.notna(ind) and ind != 'N/A' and ind != '-':
             industries_of.setdefault(ind, []).append(code)
 
-    sector_pct = calc_group_percentile(indiv_pct, weights, sectors_of, 'sector')
-    industry_pct = calc_group_percentile(indiv_pct, weights, industries_of, 'industry')
+    sector_pct = calc_group_percentile(indiv_pct, weight_df, sectors_of, 'sector')
+    industry_pct = calc_group_percentile(indiv_pct, weight_df, industries_of, 'industry')
 
     indiv_pct.to_pickle(OUT_INDIVIDUAL)
     sector_pct.to_pickle(OUT_SECTOR)
