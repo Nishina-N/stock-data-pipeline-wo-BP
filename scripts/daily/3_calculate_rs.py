@@ -90,31 +90,44 @@ def calculate_group_rs_weighted(rs_df, symbols_info, price_data, group_key):
         if group and pd.notna(group) and group != 'N/A':
             group_symbols.setdefault(group, []).append(symbol)
 
-    # 重み（最新日の Close × Volume）
-    weights = {}
+    # 重み = **その日の** Close × Volume（時点重み）
+    #
+    # 🔴 2026-08-17 変更。以前は「最新日の Close × Volume」を全期間に当てていたが、
+    #    これは歴史日付に将来の売買代金を当てる look-ahead だった。500日窓の
+    #    日次運用では影響が小さくても、同じ定義で全期間（1988-）を再生成すると
+    #    「1988年のセクターRS を、2026年までに最大になった銘柄の売買代金で
+    #    重み付けする」ことになる。
+    #    scripts/maintenance/regenerate_rs_scores_full.py の
+    #    --weight-mode pointintime と**同一定義**にしてある。
+    #    片方だけ変えると当年の境目で系列の意味が変わるので、必ず両方直すこと。
+    dv = {}
     for symbol in rs_df.columns:
-        weight = 1
         sym_data = price_data['symbols'].get(symbol, {}).get('data')
-        if sym_data:
-            latest = sym_data[-1]
-            close_price = latest.get('close')
-            volume = latest.get('volume')
-            if close_price is not None and volume is not None:
-                weight = close_price * volume
-        weights[symbol] = weight
+        if not sym_data:
+            continue
+        s = {}
+        for r in sym_data:
+            c, v = r.get('close'), r.get('volume')
+            if c is not None and v is not None:
+                s[r['date']] = c * v
+        if s:
+            dv[symbol] = pd.Series(s)
+    weight_df = pd.DataFrame(dv)
+    if not weight_df.empty:
+        weight_df.index = pd.to_datetime(weight_df.index)
+    weight_df = weight_df.reindex(index=rs_df.index, columns=rs_df.columns)
 
-    # ベクトル化計算（scripts/jp/2_calculate_jp_rs.py の calc_group_percentile と同型）。
-    # 意味論は旧実装（日付×銘柄の二重ループ）と同一:
-    #   numer = Σ_{s∈g, rs非NaN} rs[date,s] * w[s]   （NaN*w=NaN は sum(skipna) で除外）
-    #   denom = Σ_{s∈g, rs非NaN} w[s]
-    #   denom==0 → NaN
-    w = pd.Series({s: weights.get(s, 1) for s in rs_df.columns})
+    # numer = Σ_{s∈g} rs[d,s] * w[d,s] 、denom = Σ_{s∈g} w[d,s]
+    #   rs か w のどちらかが欠けている銘柄はその日だけ分子・分母とも除外する
+    #   （重み1で混ぜると売買代金加重の中に等加重が紛れて定義が濁る）
+    #   denom==0（該当銘柄0件）→ NaN → その日の順位付けに参加しない
     group_rs_dict = {}
     for group, symbols in group_symbols.items():
         sub = rs_df[symbols]
-        wg = w[symbols]
-        numer = sub.multiply(wg, axis=1).sum(axis=1)
-        denom = sub.notna().multiply(wg, axis=1).sum(axis=1)
+        wg = weight_df[symbols]
+        valid = sub.notna() & wg.notna()
+        numer = (sub * wg).where(valid).sum(axis=1)
+        denom = wg.where(valid).sum(axis=1)
         group_rs_dict[group] = numer / denom.replace(0, np.nan)
 
     group_rs_df = pd.DataFrame(group_rs_dict)
