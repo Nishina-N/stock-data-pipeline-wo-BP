@@ -38,6 +38,17 @@
 # アカウント全体の上限（Premium）
 PLAN_LIMIT_PER_MIN = 500
 
+# 🔴 2026-08-16 に **Light へダウングレード**した。Light はアカウント全体 60/分。
+#    下の RATES_PER_MIN（120/分）は Premium で履歴を取り切ったときの設定で、
+#    Light では上限超過になる。1〜7 の履歴取得スクリプトは Premium に戻すまで
+#    使わない前提なので値は残してあるが、**Light で走らせるものはこちらを使う**。
+#
+#    日次差分（8_daily_update.py）は1回あたり十数リクエストしか投げないので
+#    30/分（2秒間隔）で十分に速く、上限に対して半分の margin が取れる。
+LIGHT_PLAN_LIMIT_PER_MIN = 60
+DAILY_RATE_PER_MIN = 30
+DAILY_INTERVAL = 60.0 / DAILY_RATE_PER_MIN
+
 # 実際に使うレート（req/分）。合計が PLAN_LIMIT_PER_MIN を超えないこと。
 RATES_PER_MIN = {
     'master':          120,

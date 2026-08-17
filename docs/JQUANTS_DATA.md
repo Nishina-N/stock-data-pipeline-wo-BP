@@ -338,10 +338,94 @@ scripts/jp/jquants/
   3_fetch_bydate_series.py   fins_summary / breakdown（1営業日1ファイル）
   4_compact_to_parquet.py    JSON → 年次 parquet
   5_upload_jquants_r2.py     R2 投入（既定ドライラン・--execute で実投入）
+  6_fetch_bulk.py            /bulk 経由の月次CSV取得と検証
+  7_audit.py                 完全性監査（A日付被覆〜E値の一致）
+  8_daily_update.py          日次差分の追記（Light プラン用・GitHub Actions）
 ```
 
-取得は**1日1ファイル / 1銘柄1ファイル**で保存し、取得済みはスキップする。
-数時間のジョブが中断しても再実行すれば続きから再開できる。
+1〜7 は**一回きりの履歴取得**。1日1ファイル / 1銘柄1ファイルで保存し、取得済みは
+スキップする。数時間のジョブが中断しても再実行すれば続きから再開できる。
 0件の日も空ファイルとして記録する（「未取得」と「元々データ無し」の区別のため）。
 
-定期実行はしていない。一回きりの履歴取得として設計してある。
+8 だけが定期実行で、ローカルに JSON を残さず R2 の parquet を直接
+read-modify-write する。
+
+## 🔴 Light プランへのダウングレード（2026-08-16〜）
+
+履歴を Premium で取り切ったあと Light に落とした。以後の日次更新は
+`8_daily_update.py` を GitHub Actions（`.github/workflows/jquants-daily.yml`,
+**UTC 07:40 = JST 16:40**、4本値確定の 16:30 から10分の余裕）で回す。
+
+### Light で引ける / 引けない（2026-08-16 実測）
+
+| 引ける | 403（Standard 以上） |
+|---|---|
+| `/markets/calendar` | `/fins/details` `/fins/dividend` |
+| `/equities/master` | `/markets/breakdown` `/markets/short-ratio` |
+| `/equities/bars/daily` | `/markets/short-sale-report` |
+| `/fins/summary` | `/markets/margin-interest` `/markets/margin-alert` |
+| `/fins/earnings-date` | `/indices/bars/daily` |
+| `/equities/investor-types` | `/derivatives/bars/daily/*` |
+| `/indices/bars/daily/topix` | `/edinet/*` |
+
+403 側の R2 既存ファイルは**触らない**。プランを戻せば 1〜7 が取得済みの日を
+スキップして続きから埋める。
+
+### 🔴 Light は直近5年しか返さない
+
+`calendar` は Light だと 2021-08〜 の 2,329 日しか返らない（R2 の
+`calendar.json` は 7,305 日 = 2008-2027）。**素朴に上書きすると履歴が消える**。
+`8_daily_update.py` の `update_calendar` は必ず Date でマージし、
+マージ後に件数が減ったら例外にしている。`investor_types.parquet` /
+`master_monthly.parquet` / `topix.parquet` も単一ファイルの積み上げなので追記のみ。
+
+### 🔴 Light の 4本値は前場・後場が落ちる
+
+`/equities/bars/daily` は **Premium 44列 → Light 18列**。差の26列は
+前場(`M*`)・後場(`A*`)の四本値で、値が null になるのではなく**キーごと
+応答から消える**。Premium 期間は `MO` 627,105 / 666,466 行（94%）埋まっていた。
+
+R2 のファイル構成を壊さないため欠測で埋めて追記する（列が消えると研究側の
+読み込みが壊れる）。**2026-08-15 以降の `M*`/`A*` は「欠測」であって
+「その日は前場が無かった」ではない**。`PLAN_GATED_COLUMNS` に列挙してあり、
+既知の欠落は INFO、想定外の列差は WARNING で出る。
+
+`ExRT`（権利落ち率）はプラン差ではない。Premium でも 158/666,466 行しか
+埋まっていない元々疎な列。
+
+### 追記の安全弁
+
+- `--lookback N`（既定10日）で遡って未取得の営業日だけを埋める。
+  1回落ちても翌営業日の実行が自動で埋める。
+- 応答が0件の日は**既存を残す**。API の一時的な欠落でデータを消さない。
+- 年次ファイルは年ごとに読み書きするため、年初をまたいでも前年ぶんが壊れない。
+  `{year}.parquet` が無ければ**前年の列・dtype を引き継いだ空フレームから作る**。
+  1月最初の応答だけで列構成を決めると、その日たまたま全銘柄 null だった列が
+  落ちて前年とスキーマがずれるため、必ず前年を土台にする。
+  前年も無ければエラー終了（1〜5 のフルパスで作る）。
+- 🔴 **欠測表現の混在**。`earnings_date` の R2 履歴は bulk CSV 由来で欠測が NaN、
+  API(JSON) は空文字 `''` を返す（`SchDate` = 発表予定日が未定の行で実際に発生）。
+  追記側を None に寄せて揃える（`EMPTY_AS_NULL`）。他の系統は履歴も API 由来で
+  `''` に統一されているので変換しない。
+- `concurrency: jquants-daily` で schedule と手動実行の同時走行を止める。
+  read-modify-write なので並走すると片方の追記が失われる。
+
+### 検証済み（2026-08-16）
+
+R2 の 2026年ファイルから末尾3営業日を落とし、8 に再取得・追記させて元と比較:
+
+```
+bars_daily    666,466行 × 44列  一致（差分は既知の Light 欠落26列のみ）
+fins_summary   13,381行 ×111列  全セル一致
+earnings_date   8,945行 ×  7列  全セル一致
+dtype も3系統とも一致
+```
+
+年またぎも同様に検証した。2026年ファイルが R2 に無い状態を作り、2025年の構成を
+継いで 2026-01 の5営業日を取得させて、本物の 2026 ファイルと比較:
+
+```
+bars_daily     22,178行  列一致・dtype一致・想定外の差分なし
+fins_summary      150行  同上
+earnings_date     270行  同上
+```
