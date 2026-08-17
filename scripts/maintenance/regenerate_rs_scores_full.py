@@ -80,7 +80,6 @@ MARKETS = {
         'universe': 'jp/metadata/target_stocks_jp_latest.csv',
         'snapshot': 'jp/metadata/snapshots/target_stocks_jp_{stamp}.csv',
         'out':      os.path.join(DATA_FOLDER, 'regen_rs_scores_jp'),
-        'out_pit':  os.path.join(DATA_FOLDER, 'regen_rs_scores_jp_pit'),
         'csv':      os.path.join(DATA_FOLDER, 'target_stocks_jp_latest.csv'),
     },
 }
@@ -511,9 +510,16 @@ def main():
     global M, TARGET_STOCKS_CSV, OUT_ROOT, CORE_PREFIX, SCORES_PREFIX
     M = MARKETS[args.market]
     TARGET_STOCKS_CSV = M['csv']
-    OUT_ROOT = M['out_pit'] if (args.classification == 'pit' and 'out_pit' in M) else M['out']
+    # 置き場は (分類, 重み) の組み合わせごとに分ける。
+    # 🔴 等加重は**別系統**として保存する（同じレコードに2つの値を入れない）。
+    #    等加重では出来高0の群が落ちないため、売買代金加重とは
+    #    (date, group) の行集合そのものが違う。1レコードに混ぜると
+    #    どちらかに null が入り、「値が無い」と「その加重では群が成立しない」
+    #    の区別が消える。研究側は (date, group) で結合する。
+    suffix = '_ew' if args.weight_mode == 'equal' else ''
+    OUT_ROOT = M['out'] + ('_pit' if args.classification == 'pit' else '') + suffix
     CORE_PREFIX = M['core']
-    SCORES_PREFIX = M['scores']
+    SCORES_PREFIX = M['scores'] + suffix
 
     years = parse_years(args.years)
     bucket = os.environ.get('R2_BUCKET_NAME', 'stock-data')
