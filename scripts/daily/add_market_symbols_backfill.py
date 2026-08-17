@@ -77,6 +77,14 @@ def update_universe_csv(symbols, bucket, execute):
     try:
         s3.upload_file(local_path, bucket, R2_CSV_KEY)
         logging.info(f"✅ Uploaded {R2_CSV_KEY}")
+
+        # 🔴 このスクリプトも latest を書き換える（実際に 2026-08-13 に
+        # 市場ETFを注入して、直前に生成した RS_scores と食い違わせた）。
+        # 月次アップローダと同じく日付付きスナップショットを残す。
+        from datetime import datetime as _dt
+        snap = f"metadata/snapshots/target_stocks_{_dt.now():%Y-%m-%d}.csv"
+        s3.upload_file(local_path, bucket, snap)
+        logging.info(f"✅ Snapshot {snap}")
     finally:
         s3.close()
 

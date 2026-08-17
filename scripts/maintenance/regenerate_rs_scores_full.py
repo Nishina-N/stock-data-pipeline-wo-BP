@@ -44,6 +44,7 @@ import sys
 import json
 import logging
 import argparse
+from datetime import datetime
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -61,10 +62,32 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 DATA_FOLDER = 'data'
-TARGET_STOCKS_CSV = os.path.join(DATA_FOLDER, 'target_stocks_latest.csv')
-OUT_ROOT = os.path.join(DATA_FOLDER, 'regen_rs_scores')
-CORE_PREFIX = 'stocks/daily/core'
-SCORES_PREFIX = 'scores/RS_scores'
+
+# 市場ごとの置き場。**定義（build_year）は共有する**。
+# 別スクリプトに分けると必ずまた乖離するので、ここだけを切り替える。
+MARKETS = {
+    'us': {
+        'core':     'stocks/daily/core',
+        'scores':   'scores/RS_scores',
+        'universe': 'metadata/target_stocks_latest.csv',
+        'snapshot': 'metadata/snapshots/target_stocks_{stamp}.csv',
+        'out':      os.path.join(DATA_FOLDER, 'regen_rs_scores'),
+        'csv':      os.path.join(DATA_FOLDER, 'target_stocks_latest.csv'),
+    },
+    'jp': {
+        'core':     'jp/stocks/daily/core',
+        'scores':   'jp/scores/RS_scores',
+        'universe': 'jp/metadata/target_stocks_jp_latest.csv',
+        'snapshot': 'jp/metadata/snapshots/target_stocks_jp_{stamp}.csv',
+        'out':      os.path.join(DATA_FOLDER, 'regen_rs_scores_jp'),
+        'csv':      os.path.join(DATA_FOLDER, 'target_stocks_jp_latest.csv'),
+    },
+}
+M = MARKETS['us']          # main() が --market で差し替える
+TARGET_STOCKS_CSV = M['csv']
+OUT_ROOT = M['out']
+CORE_PREFIX = M['core']
+SCORES_PREFIX = M['scores']
 
 MAX_READ_WORKERS = 24
 
@@ -94,9 +117,21 @@ def download_universe(bucket):
     """
     os.makedirs(DATA_FOLDER, exist_ok=True)
     s3 = create_s3_client()
-    obj = s3.get_object(Bucket=bucket, Key='metadata/target_stocks_latest.csv')
+    obj = s3.get_object(Bucket=bucket, Key=M['universe'])
     with open(TARGET_STOCKS_CSV, 'wb') as f:
         f.write(obj['Body'].read())
+    if M is MARKETS['jp']:
+        # JP の CSV は列名が Symbol/Sector/Industry で US と違う。
+        # production (scripts/jp/2_calculate_jp_rs.py) と同じ読み方をする
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), 'jp'))
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            '_jprs', os.path.join(os.path.dirname(os.path.dirname(
+                os.path.abspath(__file__))), 'jp', '2_calculate_jp_rs.py'))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.load_symbols_info_jp(TARGET_STOCKS_CSV)
     return load_symbols_info(TARGET_STOCKS_CSV)
 
 
@@ -190,55 +225,61 @@ def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
         if not info:
             continue
         g = info.get(group_key)
-        if g and pd.notna(g) and g != 'N/A':
+        # '-' は JP の CSV に出る未分類マーカー（production と同じ扱い）
+        if g and pd.notna(g) and g not in ('N/A', '-'):
             group_symbols[g].append(sym)
 
-    all_dates = sorted({d for rows in per_symbol.values() for d in rows})
+    # 🔴 production（scripts/daily/3_calculate_rs.py の calculate_group_rs_weighted、
+    #    scripts/jp/2_calculate_jp_rs.py の calc_group_percentile）と**同じ行列演算**で
+    #    書く。日付×銘柄の二重ループでも結果は同じだが、式が違うと定義が
+    #    いつの間にか乖離する。速度もこちらが速い。
+    rs_df = pd.DataFrame({s: {d: v[0] for d, v in rows.items()}
+                          for s, rows in per_symbol.items()})
+    rs_df = rs_df.sort_index()
 
-    group_raw = defaultdict(dict)
-    effective = defaultdict(dict)      # group -> {date: 有効銘柄数}
+    if weight_mode == 'pointintime':
+        # その日の close×volume。将来情報を使わない。
+        # close/volume が欠ける日は NaN のままにして、その銘柄をその日だけ
+        # 分子・分母とも除外する（重み1で混ぜると売買代金加重の中に
+        # 等加重が紛れ、定義が濁る）
+        w_df = pd.DataFrame({
+            s: {d: (v[1] * v[2]) if (v[1] is not None and v[2] is not None) else None
+                for d, v in rows.items()}
+            for s, rows in per_symbol.items()})
+        w_df = w_df.reindex(index=rs_df.index, columns=rs_df.columns)
+    elif weight_mode == 'equal':
+        w_df = pd.DataFrame(1.0, index=rs_df.index, columns=rs_df.columns)
+    else:                                   # latest（旧 production 互換）
+        w_df = pd.DataFrame(
+            {s: float(weights.get(s, 1)) for s in rs_df.columns},
+            index=rs_df.index)
+
+    group_raw = {}
+    eff_counts = {}
     for g, syms in group_symbols.items():
-        for date in all_dates:
-            num = den = 0.0
-            n = 0
-            for sym in syms:
-                rec = per_symbol[sym].get(date)
-                if rec is None:
-                    continue
-                rs, close, volume = rec
-                if weight_mode == 'equal':
-                    w = 1
-                elif weight_mode == 'pointintime':
-                    # 🔴 その日の close×volume。将来情報を使わない。
-                    # close/volume が欠けている日は重みを決められないので
-                    # その銘柄をその日だけ除外する（重み1で混ぜると
-                    # 売買代金加重の中に等加重が紛れ、定義が濁る）
-                    if close is None or volume is None:
-                        continue
-                    w = close * volume
-                else:
-                    w = weights.get(sym, 1)
-                num += rs * w
-                den += w
-                n += 1
-            # 🔴 該当銘柄0件の群は値を持たない = その日の順位付けに参加しない
-            if den > 0:
-                group_raw[g][date] = num / den
-                effective[g][date] = n
+        sub = rs_df[syms]
+        wg = w_df[syms]
+        valid = sub.notna() & wg.notna()
+        numer = (sub * wg).where(valid).sum(axis=1)
+        denom = wg.where(valid).sum(axis=1)
+        # 🔴 該当銘柄0件の群は NaN = その日の順位付けに参加しない
+        group_raw[g] = numer / denom.replace(0, np.nan)
+        eff_counts[g] = valid.sum(axis=1)
 
     if not group_raw:
         return [], {}
 
-    df = pd.DataFrame(group_raw).reindex(all_dates)
+    df = pd.DataFrame(group_raw)
     df.index = pd.to_datetime(df.index)
     df = df.sort_index()
+    effective = pd.DataFrame(eff_counts).reindex(pd.DataFrame(group_raw).index)
     pct = df.rank(axis=1, pct=True) * 98 + 1
 
     # stock_count は production と同じく symbols_info からの固定値
     stock_count = defaultdict(int)
     for info in symbols_info.values():
         g = info.get(group_key)
-        if g and pd.notna(g) and g != 'N/A':
+        if g and pd.notna(g) and g not in ('N/A', '-'):
             stock_count[g] += 1
 
     industry_to_sector = {}
@@ -268,17 +309,22 @@ def build_year(per_symbol, weights, symbols_info, group_key, weight_mode):
                 rec['sector'] = industry_to_sector.get(g, 'N/A')
             records.append(rec)
 
+    # 🔴 並び順を (date, group) で決定的にする。
+    #    順序が実装依存だと、値が同一でもファイルが一致せず、
+    #    「再生成して前回と同じか」を機械的に確認できない。
+    records.sort(key=lambda r: (r['date'], r[group_key]))
+
     # 診断: 有効銘柄数の分布（初期年で「1銘柄だけの群」がどれだけ出るか）
-    ncounts = [n for d in effective.values() for n in d.values()]
+    # 0 は「その群にその日1銘柄も無い」= 順位付けに参加していないので数えない
+    ncounts = effective.to_numpy().ravel()
+    ncounts = ncounts[ncounts > 0]
     diag = {
         'dates': len(per_date_groups),
         'groups_min': min(per_date_groups) if per_date_groups else 0,
         'groups_max': max(per_date_groups) if per_date_groups else 0,
         'groups_median': int(np.median(per_date_groups)) if per_date_groups else 0,
-        'n1_share': (sum(1 for n in ncounts if n == 1) / len(ncounts)
-                     if ncounts else 0.0),
-        'n_lt5_share': (sum(1 for n in ncounts if n < 5) / len(ncounts)
-                        if ncounts else 0.0),
+        'n1_share': (float((ncounts == 1).mean()) if len(ncounts) else 0.0),
+        'n_lt5_share': (float((ncounts < 5).mean()) if len(ncounts) else 0.0),
     }
     return records, diag
 
@@ -328,6 +374,7 @@ def compare_r2(bucket, group_key, year, records):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument('--market', choices=['us', 'jp'], default='us')
     ap.add_argument('--years', required=True, help='例 1988-2026 / 2024 / 2024,2025')
     ap.add_argument('--build', action='store_true', help='ローカル生成のみ')
     ap.add_argument('--execute', action='store_true', help='生成後 R2 へ一括投入')
@@ -343,11 +390,18 @@ def main():
                          'equal: 等加重')
     args = ap.parse_args()
 
+    global M, TARGET_STOCKS_CSV, OUT_ROOT, CORE_PREFIX, SCORES_PREFIX
+    M = MARKETS[args.market]
+    TARGET_STOCKS_CSV = M['csv']
+    OUT_ROOT = M['out']
+    CORE_PREFIX = M['core']
+    SCORES_PREFIX = M['scores']
+
     years = parse_years(args.years)
     bucket = os.environ.get('R2_BUCKET_NAME', 'stock-data')
 
     logging.info('=' * 60)
-    logging.info(f'RS_scores 全期間再生成  {years[0]}..{years[-1]} ({len(years)}年)  '
+    logging.info(f'[{args.market}] RS_scores 全期間再生成  {years[0]}..{years[-1]} ({len(years)}年)  '
                  f'weight={args.weight_mode}  '
                  f'{"EXECUTE" if args.execute else "BUILD/COMPARE"}')
     logging.info('=' * 60)
@@ -429,6 +483,37 @@ def main():
     # 🔴 全年を作り終えてからまとめて上げる（新旧混在の期間を作らない）
     total = sum(len(v) for v in produced.values())
     logging.info(f'R2 へ一括投入: {total} ファイル')
+
+    # 🔴 グループの構成銘柄は metadata/target_stocks_latest.csv に依存する。
+    #    これは毎月1日の cron で上書きされ（市場ETF追加などで手動注入も入る）、
+    #    日付版が残っていない。スナップショットを残さないとこのヴィンテージは
+    #    二度と再現できない。スコア本体より先に上げる。
+    stamp = datetime.now().strftime('%Y-%m-%d')
+    snap_key = M['snapshot'].format(stamp=stamp)
+    try:
+        s3 = create_s3_client()
+        s3.upload_file(TARGET_STOCKS_CSV, bucket, snap_key)
+        logging.info(f'  ユニバース保存: {snap_key}')
+    except Exception as e:
+        logging.error(f'  ✗ ユニバース保存に失敗: {e}')
+        logging.error('  スナップショット無しでは再現できないため中止する')
+        return False
+
+    manifest = {
+        'generated': stamp,
+        'weight_mode': args.weight_mode,
+        'universe_snapshot': snap_key,
+        'years': [min(y for v in produced.values() for y in v),
+                  max(y for v in produced.values() for y in v)],
+        'definition': (
+            'group_raw = Σ(individual rs_percentile × その日の close×volume) / Σ(その日の close×volume); '
+            'close/volume が欠ける銘柄はその日除外; 該当銘柄0件の群は順位付けに不参加; '
+            'rs_percentile = rank(axis=1, pct=True) × 98 + 1; rs_raw は出力しない'),
+        'note': ('2026-08-17 の全期間再生成。これ以前の scores/RS_scores は '
+                 '2024-01-02 を境に定義が2つ連結されており、重みも最新日の '
+                 'close×volume（look-ahead かつ毎日履歴が変わる）だった'),
+    }
+
     ok = fail = 0
     for gk, by_year in produced.items():
         for year, path in sorted(by_year.items()):
@@ -439,6 +524,20 @@ def main():
             except Exception as e:
                 logging.error(f'  ✗ {gk}/{year}: {e}')
                 fail += 1
+    if fail == 0:
+        # 🔴 マニフェストは**スコア本体が全部上がってから**書く。
+        #    先に書くと、途中で失敗したときに「完了した版」の目印だけが残る。
+        try:
+            s3 = create_s3_client()
+            s3.put_object(Bucket=bucket,
+                          Key=f'{SCORES_PREFIX}/_vintage.json',
+                          Body=json.dumps(manifest, ensure_ascii=False,
+                                          indent=1).encode('utf-8'))
+            logging.info(f'  マニフェスト: {SCORES_PREFIX}/_vintage.json')
+        except Exception as e:
+            logging.error(f'  ✗ マニフェスト書込に失敗: {e}')
+            fail += 1
+
     logging.info(f'✅ 成功{ok} / 失敗{fail}')
     return fail == 0
 
