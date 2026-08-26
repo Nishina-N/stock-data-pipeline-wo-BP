@@ -33,6 +33,10 @@ r2://your-bucket/
     ├── stocks/analyst_estimates/{code}.json
     ├── stocks/shares_float/{code}.json
     ├── scores/RS_scores/{sector,industry}/{year}.json   # 17業種 / 33業種（東証区分）
+    ├── jquants/                                # J-Quants 生データ（詳細は docs/JQUANTS_DATA.md）
+    │   ├── {breakdown,fins_summary,...}/{year}.parquet
+    │   └── bars_minute/{YYYYMM}.parquet        # 分足（アドオン・直近2年ローリング）
+    │       # ティックは約18GBのためR2に置かない（ローカル保管・docs/JQUANTS_DATA.md）
     └── metadata/
         ├── target_stocks_jp_latest.csv
         └── last-updated.json

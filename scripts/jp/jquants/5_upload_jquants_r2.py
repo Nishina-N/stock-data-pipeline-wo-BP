@@ -30,9 +30,15 @@ import glob
 import argparse
 import logging
 
+from dotenv import load_dotenv
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.dirname(os.path.abspath(__file__))))))
 from common.r2 import create_s3_client
+
+# 他の jp スクリプトと同じく .env から R2 の資格情報を読む
+# （無いと create_s3_client() が KeyError で落ちる）
+load_dotenv()
 
 logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -40,6 +46,14 @@ logging.basicConfig(level=logging.INFO,
 DATA_ROOT = os.path.join('data', 'jquants')
 PARQUET_ROOT = os.path.join(DATA_ROOT, '_parquet')
 PREFIX = 'jp/jquants'
+
+# 🔴 既定の収集から外すデータセット。
+#    collect() は _parquet/** を再帰で拾うので、ローカルに置くだけのものは
+#    ここに入れないと次の実行で黙って R2 に載る。
+#    trades（ティック・約18GB）は「ダウンロードと変換まで、R2 には上げない」
+#    という運用方針（2026-08-26）。上げる判断をしたときだけ
+#    `--only trades` で明示的に指定する。
+EXCLUDE_BY_DEFAULT = {'trades'}
 
 
 def collect():
@@ -53,6 +67,8 @@ def collect():
     for p in sorted(glob.glob(os.path.join(PARQUET_ROOT, '**', '*.parquet'),
                               recursive=True)):
         rel = os.path.relpath(p, PARQUET_ROOT).replace(os.sep, '/')
+        if rel.split('/')[0] in EXCLUDE_BY_DEFAULT:
+            continue
         items.append((p, f'{PREFIX}/{rel}'))
     return items
 
@@ -91,6 +107,14 @@ def main():
     items = collect()
     if args.only:
         want = {n.strip() for n in args.only.split(',') if n.strip()}
+        # --only で名指しされたものは既定の除外より優先する
+        for name in sorted(want & EXCLUDE_BY_DEFAULT):
+            logging.warning(f'⚠ {name} は既定では投入しない設定です'
+                            f'（--only で明示指定されたため投入します）')
+            for p in sorted(glob.glob(os.path.join(PARQUET_ROOT, name, '**',
+                                                   '*.parquet'), recursive=True)):
+                rel = os.path.relpath(p, PARQUET_ROOT).replace(os.sep, '/')
+                items.append((p, f'{PREFIX}/{rel}'))
         items = [(p, k) for p, k in items
                  if k.split('/')[2].split('.')[0] in want]
         logging.info(f'--only {sorted(want)} → {len(items)} ファイル')
