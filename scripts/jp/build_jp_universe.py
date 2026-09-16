@@ -36,7 +36,11 @@ from dotenv import load_dotenv
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-JPX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xls"
+# 🔴 2026-09-17: JPX が .xls → .xlsx に切り替えた。旧 URL は 404 を返す。
+#    パスのトークン(tvdivq...)は同じで拡張子だけが変わっている。
+#    掲載元は https://www.jpx.co.jp/markets/statistics-equities/misc/01.html
+#    404 になったらまずこのページの実リンクを確認すること。
+JPX_URL = "https://www.jpx.co.jp/markets/statistics-equities/misc/tvdivq0000001vg2-att/data_j.xlsx"
 
 DATA_FOLDER = "data"
 OUT_CSV = os.path.join(DATA_FOLDER, "target_stocks_jp_latest.csv")
@@ -98,9 +102,40 @@ def inject_market_symbols(df):
     return pd.concat([df, pd.DataFrame(rows)], ignore_index=True)
 
 
+def check_not_shrinking(s3, bucket, n_new, tolerance, allow_shrink):
+    """R2 の既存ユニバースと比べて極端に減っていないか。
+
+    既存が無ければ（初回）そのまま通す。読めない場合は止める
+    ―― 比較できないまま上書きするのが一番まずい。
+    """
+    try:
+        body = s3.get_object(Bucket=bucket, Key=R2_KEY)['Body'].read()
+    except s3.exceptions.NoSuchKey:
+        logging.info("  R2 に既存なし（初回）。そのまま投入します")
+        return True
+
+    n_old = len(pd.read_csv(io.BytesIO(body), dtype={'Symbol': str}))
+    limit = n_old * (1 - tolerance)
+    logging.info(f"  既存 {n_old} 銘柄 → 新 {n_new} 銘柄 ({n_new - n_old:+d})")
+    if n_new >= limit or allow_shrink:
+        if n_new < limit:
+            logging.warning("  ⚠ 大きく減っていますが --allow-shrink 指定のため投入します")
+        return True
+
+    logging.error(f"✗ 銘柄数が {n_old} → {n_new} と "
+                  f"{100 * (1 - n_new / n_old):.1f}% 減っています"
+                  f"（許容 {100 * tolerance:.0f}%）。JPX 側の不完全なファイルを"
+                  f"疑ってください。意図した縮小なら --allow-shrink を付けてください")
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--execute', action='store_true', help='R2(jp/metadata) へアップロード')
+    ap.add_argument('--shrink-tolerance', type=float, default=0.05,
+                    help='R2 の既存より何割まで減ってよいか（既定 5%%）')
+    ap.add_argument('--allow-shrink', action='store_true',
+                    help='銘柄数が大きく減っても投入する')
     args = ap.parse_args()
 
     df = download_jpx()
@@ -124,6 +159,14 @@ def main():
     s3 = create_s3_client()
     try:
         bucket = os.environ['R2_BUCKET_NAME']
+
+        # 🔴 latest は上書き運用。JPX が部分的なファイルを返したときに
+        #    ユニバースを丸ごと痩せさせないよう、既存と比べてから入れる。
+        #    廃止と新規で数本動くのは正常なので、割合で見る。
+        if not check_not_shrinking(s3, bucket, len(uni), args.shrink_tolerance,
+                                   args.allow_shrink):
+            return False
+
         s3.upload_file(OUT_CSV, bucket, R2_KEY)
         logging.info(f"✅ Uploaded -> {R2_KEY}")
 
