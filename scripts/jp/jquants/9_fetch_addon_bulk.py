@@ -198,8 +198,14 @@ def infer_schema(path, numeric):
     return build_table(head, numeric).schema
 
 
-def convert_month(dataset, files, out_month, schema):
-    """分足: 月に属する csv.gz 群 → 1枚の月次 parquet。"""
+def convert_month(dataset, files, out_month, schema, allow_shrink=False):
+    """分足: 月に属する csv.gz 群 → 1枚の月次 parquet。
+
+    🔴 既存の月を作り直すときは**行が減っていないこと**を確認してから差し替える。
+       当月は live の日次ファイルから組むので、月の途中で作った parquet を
+       あとから同じ手順で上書きする経路が常にある。取り違えると
+       「先月まで入っていた日が消えた」に静かになる。
+    """
     cfg = DATASETS[dataset]
     os.makedirs(os.path.dirname(out_month), exist_ok=True)
     tmp = out_month + '.part'
@@ -214,8 +220,62 @@ def convert_month(dataset, files, out_month, schema):
                 n += t.num_rows
     finally:
         w.close()
+
+    if os.path.exists(out_month):
+        old = pq.ParquetFile(out_month).metadata.num_rows
+        if n < old and not allow_shrink:
+            os.remove(tmp)
+            raise JQuantsError(
+                f'{os.path.basename(out_month)} を作り直すと行が減ります '
+                f'({old:,} → {n:,})。既存を残しました。'
+                f'意図した縮小なら --allow-shrink を付けてください')
+        if n < old:
+            logging.warning(f'  {os.path.basename(out_month)}: '
+                            f'{old:,} → {n:,}行 に縮小（--allow-shrink 指定）')
+
     os.replace(tmp, out_month)
     return n
+
+
+def month_sources(names):
+    """月次 parquet を組む素材を決める。
+
+    🔴 同じ月に historical の月次と live の日次が両方そろうことがある
+       （月次は翌月5日ごろ publish されるが、live の日次は残り続ける）。
+       両方を concat すると**同じ行が二重に入る**。月次があればそちらだけを使う。
+    """
+    monthly = sorted(n for n in names if len(stem_key(n)) == 6)
+    if monthly:
+        return monthly
+    return sorted(names)
+
+
+def sources_path(out_root, ym):
+    return os.path.join(out_root, '_sources', f'{ym}.json')
+
+
+def load_sources(out_root, ym):
+    p = sources_path(out_root, ym)
+    if not os.path.exists(p):
+        return None
+    try:
+        import json
+        with open(p, encoding='utf-8') as f:
+            return json.load(f).get('sources')
+    except Exception:
+        return None
+
+
+def save_sources(out_root, ym, srcs, rows):
+    import json
+    p = sources_path(out_root, ym)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    tmp = p + '.part'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump({'month': ym, 'rows': rows, 'sources': srcs,
+                   'built_at': pd.Timestamp.utcnow().isoformat()},
+                  f, ensure_ascii=False, indent=2)
+    os.replace(tmp, p)
 
 
 def convert_days(dataset, fn, out_root, schema):
@@ -232,7 +292,7 @@ def convert_days(dataset, fn, out_root, schema):
     return rows
 
 
-def convert(dataset):
+def convert(dataset, allow_shrink=False):
     cfg = DATASETS[dataset]
     src = os.path.join(BULK_ROOT, dataset)
     files = sorted(f for f in os.listdir(src)
@@ -248,15 +308,33 @@ def convert(dataset):
     if cfg['grain'] == 'month':
         by_month = {}
         for f in files:
-            by_month.setdefault(stem_key(f)[:6], []).append(os.path.join(src, f))
+            by_month.setdefault(stem_key(f)[:6], []).append(f)
         for ym in sorted(by_month):
             out = os.path.join(out_root, f'{ym}.parquet')
-            if os.path.exists(out):
+            srcs = month_sources(by_month[ym])
+
+            # 🔴 「出来ていれば飛ばす」では当月を取りこぼす。当月は live の
+            #    日次ファイルから組むので、日が増えれば作り直す必要がある。
+            #    素材の集合を記録しておき、変わったときだけ作り直す。
+            if os.path.exists(out) and load_sources(out_root, ym) == srcs:
                 continue
-            n = convert_month(dataset, sorted(by_month[ym]), out, schema)
+
+            # 素材の記録が無い月（この仕組みより前に作った分）。素材が
+            # historical の月次だけなら確定済みなので、作り直さず記録だけ残す。
+            if (os.path.exists(out) and load_sources(out_root, ym) is None
+                    and all(len(stem_key(s)) == 6 for s in srcs)):
+                save_sources(out_root, ym, srcs,
+                             pq.ParquetFile(out).metadata.num_rows)
+                logging.info(f'  {dataset} {ym}: 確定済み（素材を記録）')
+                continue
+
+            n = convert_month(dataset, [os.path.join(src, f) for f in srcs],
+                              out, schema, allow_shrink=allow_shrink)
+            save_sources(out_root, ym, srcs, n)
             total += n
             logging.info(f'  {dataset} {ym}: {n:,}行 '
-                         f'{os.path.getsize(out) / 1e6:.0f}MB')
+                         f'{os.path.getsize(out) / 1e6:.0f}MB '
+                         f'（素材 {len(srcs)}本）')
     else:
         for f in files:
             key = stem_key(f)
@@ -391,6 +469,8 @@ def main():
     ap.add_argument('--no-convert', action='store_true', help='取得だけ行う')
     ap.add_argument('--convert-only', action='store_true', help='変換だけ行う')
     ap.add_argument('--verify', action='store_true', help='取得後に検証する')
+    ap.add_argument('--allow-shrink', action='store_true',
+                    help='月次 parquet の行数が減る作り直しを許可する')
     args = ap.parse_args()
 
     if not args.dataset and not args.all:
@@ -406,7 +486,7 @@ def main():
         if not args.convert_only:
             fetch(client, ds)
         if not args.no_convert:
-            convert(ds)
+            convert(ds, allow_shrink=args.allow_shrink)
         if args.verify:
             ok &= (verify_minute(client) if ds == 'bars_minute'
                    else verify_trades(client))
