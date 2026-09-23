@@ -23,7 +23,9 @@ def get_symbols_from_csv():
         logging.error(f"Target stocks file not found: {TARGET_STOCKS_CSV}")
         return []
 
-    df = pd.read_csv(TARGET_STOCKS_CSV)
+    # ティッカー NA(Nano Labs) を欠損にしないため既定の na_values を使わない
+    # （理由は common/symbols.py の READ_CSV_KWARGS）
+    df = pd.read_csv(TARGET_STOCKS_CSV, keep_default_na=False, na_values=[''])
 
     if 'Symbol' not in df.columns:
         logging.error("'Symbol' column not found in CSV")

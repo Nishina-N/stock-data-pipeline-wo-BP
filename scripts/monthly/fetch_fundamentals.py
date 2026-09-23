@@ -402,7 +402,9 @@ def load_target_stocks():
         return []
     
     import pandas as pd
-    df = pd.read_csv(TARGET_STOCKS_CSV)
+    # ティッカー NA(Nano Labs) を欠損にしないため既定の na_values を使わない
+    # （理由は common/symbols.py の READ_CSV_KWARGS）
+    df = pd.read_csv(TARGET_STOCKS_CSV, keep_default_na=False, na_values=[''])
     
     symbols = df['Symbol'].tolist()
     logging.info(f"Loaded {len(symbols)} symbols from CSV")

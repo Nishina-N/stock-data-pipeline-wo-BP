@@ -51,7 +51,10 @@ def update_universe_csv(symbols, bucket, execute):
     try:
         obj = s3.get_object(Bucket=bucket, Key=R2_CSV_KEY)
         import io
-        df = pd.read_csv(io.BytesIO(obj['Body'].read()))
+        # 🔴 ここは読んだものを to_csv で R2 に書き戻す。既定のまま読むと
+        #    ティッカー NA が NaN 化し、書き戻しで Symbol が空欄になって
+        #    R2 の原本を壊す（2026-08-17 版で実際に発生した）
+        df = pd.read_csv(io.BytesIO(obj['Body'].read()), keep_default_na=False, na_values=[''])
     finally:
         s3.close()
 

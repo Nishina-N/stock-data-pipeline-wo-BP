@@ -237,7 +237,9 @@ def get_symbols(args):
     if not os.path.exists(TARGET_STOCKS_CSV):
         logging.error("Universe CSV not found: %s", TARGET_STOCKS_CSV)
         return []
-    df = pd.read_csv(TARGET_STOCKS_CSV)
+    # ティッカー NA(Nano Labs) を欠損にしないため既定の na_values を使わない
+    # （理由は common/symbols.py の READ_CSV_KWARGS）
+    df = pd.read_csv(TARGET_STOCKS_CSV, keep_default_na=False, na_values=[''])
     df = df.dropna(subset=['Symbol']).drop_duplicates('Symbol')
     if args.limit and 'Market_Cap' in df.columns:
         # 時価総額の大きい順に絞る
