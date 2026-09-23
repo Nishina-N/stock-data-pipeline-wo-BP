@@ -7,4 +7,6 @@ python-dotenv==1.0.0
 # jp/jquants の parquet 読み書きに必要（pandas は parquet を pyarrow に委譲する）。
 # ローカルと同じ版に固定しておく
 pyarrow==24.0.0
-xlrd==2.0.1
+# JPX の銘柄一覧は 2026-09 に .xls → .xlsx へ変わった。xlsx は openpyxl が読む
+# （xlrd 2.x は .xls 専用で .xlsx を読めない）。
+openpyxl==3.1.5

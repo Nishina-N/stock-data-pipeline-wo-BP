@@ -1,0 +1,54 @@
+# JP ユニバースの月次再構築。
+#
+# 🔴 これが無かったため、jp/metadata/target_stocks_jp_latest.csv は
+#    2026-07-20 の手動実行から2ヶ月更新されていなかった。
+#    jp-daily-update.yml の 0_download_jp_universe.py は R2 から
+#    **ダウンロードするだけ**で、ファイルが存在しない場合しか再構築しない。
+#    US 側は monthly-fetch-stocks.yml が毎月1日に作り直しており、JP だけ
+#    対応する仕組みが無かった。
+#
+# 上場・廃止を取り込まないと、新規上場は永久にユニバースに入らず、
+# 廃止銘柄は残り続ける（2026-07-20 → 09-17 の実測で廃止15・新規6）。
+name: JP Monthly Universe Rebuild
+
+on:
+  schedule:
+    - cron: '0 1 1 * *'  # 毎月1日 01:00 UTC（US の monthly と1時間ずらす）
+  workflow_dispatch:
+
+concurrency: jp-universe
+
+jobs:
+  rebuild-universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Create data directory
+        run: mkdir -p data
+
+      # JPX から取得し、R2 の latest と日付つきスナップショットを更新する
+      - name: Rebuild JP universe from JPX
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET_NAME: ${{ secrets.R2_BUCKET_NAME }}
+        run: python scripts/jp/build_jp_universe.py --execute
+
+      - name: Cleanup
+        if: always()
+        run: rm -rf data/*
